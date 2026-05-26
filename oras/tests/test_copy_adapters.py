@@ -24,65 +24,12 @@ from oras.copy import (
 )
 from oras.copy.adapters import LayoutTarget, RegistryTarget
 from oras.copy.descriptor import descriptors_equal
+from oras.tests.conftest import InMemoryTarget  # shared test fixture
 
 # Path to the OCI layout test fixtures
 _OCILAYOUT1_DIR = os.path.join(
     os.path.dirname(__file__), "ocilayout_data", "ocilayout1"
 )
-
-
-# ---------------------------------------------------------------------------
-# Test helper: In-memory Target for integration tests
-# ---------------------------------------------------------------------------
-
-
-class InMemoryTarget:
-    """In-memory Target implementation for integration tests."""
-
-    def __init__(self):
-        self._content: Dict[str, bytes] = {}
-        self._tags: Dict[str, Descriptor] = {}
-        self._lock = threading.Lock()
-
-    def fetch(self, desc: Descriptor) -> BinaryIO:
-        digest = desc.get("digest", "")
-        with self._lock:
-            data = self._content.get(digest)
-        if data is None:
-            raise FileNotFoundError(f"content not found: {digest}")
-        return io.BytesIO(data)
-
-    def exists(self, desc: Descriptor) -> bool:
-        digest = desc.get("digest", "")
-        with self._lock:
-            return digest in self._content
-
-    def push(self, desc: Descriptor, content: BinaryIO) -> None:
-        data = content.read()
-        digest = desc.get("digest", "")
-        with self._lock:
-            if digest in self._content:
-                raise FileExistsError(f"content already exists: {digest}")
-            self._content[digest] = data
-
-    def tag(self, desc: Descriptor, reference: str) -> None:
-        with self._lock:
-            self._tags[reference] = desc
-
-    def resolve(self, reference: str) -> Descriptor:
-        with self._lock:
-            desc = self._tags.get(reference)
-        if desc is None:
-            raise FileNotFoundError(f"reference not found: {reference}")
-        return desc
-
-    def get_content(self, digest: str) -> bytes:
-        with self._lock:
-            return self._content.get(digest, b"")
-
-    def get_tag(self, reference: str) -> Optional[Descriptor]:
-        with self._lock:
-            return self._tags.get(reference)
 
 
 # ---------------------------------------------------------------------------

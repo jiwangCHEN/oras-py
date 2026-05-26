@@ -38,66 +38,7 @@ from oras.copy.descriptor import (
 )
 from oras.copy.graph import LimitedRegion, copy_graph
 from oras.copy.tracker import StatusTracker
-
-
-# ---------------------------------------------------------------------------
-# Test fixtures: In-memory Target implementation
-# ---------------------------------------------------------------------------
-
-
-class InMemoryTarget:
-    """
-    In-memory implementation of the Target protocol.
-
-    Supports fetch, exists, push, tag, resolve.
-    """
-
-    def __init__(self):
-        self._content: Dict[str, bytes] = {}  # digest -> bytes
-        self._tags: Dict[str, Descriptor] = {}  # reference -> descriptor
-        self._lock = threading.Lock()
-
-    def fetch(self, desc: Descriptor) -> BinaryIO:
-        digest = desc.get("digest", "")
-        with self._lock:
-            data = self._content.get(digest)
-        if data is None:
-            raise FileNotFoundError(f"content not found: {digest}")
-        return io.BytesIO(data)
-
-    def exists(self, desc: Descriptor) -> bool:
-        digest = desc.get("digest", "")
-        with self._lock:
-            return digest in self._content
-
-    def push(self, desc: Descriptor, content: BinaryIO) -> None:
-        data = content.read()
-        digest = desc.get("digest", "")
-        with self._lock:
-            if digest in self._content:
-                raise FileExistsError(f"content already exists: {digest}")
-            self._content[digest] = data
-
-    def tag(self, desc: Descriptor, reference: str) -> None:
-        with self._lock:
-            self._tags[reference] = desc
-
-    def resolve(self, reference: str) -> Descriptor:
-        with self._lock:
-            desc = self._tags.get(reference)
-        if desc is None:
-            raise FileNotFoundError(f"reference not found: {reference}")
-        return desc
-
-    def get_content(self, digest: str) -> bytes:
-        """Test helper: get raw content by digest."""
-        with self._lock:
-            return self._content.get(digest, b"")
-
-    def get_tag(self, reference: str) -> Optional[Descriptor]:
-        """Test helper: get descriptor for a tag."""
-        with self._lock:
-            return self._tags.get(reference)
+from oras.tests.conftest import InMemoryTarget  # shared test fixture
 
 
 def _make_blob(data: bytes, media_type: str = "application/octet-stream") -> Descriptor:
@@ -929,9 +870,9 @@ class TestCopy:
 
         copy(src, "v1.0", dst, "v1.0", opts)
 
-        # Pre/post copy hooks should have been called
-        assert len(pre_copy_called) >= 1
-        assert len(post_copy_called) >= 1
+        # Single-blob copy: exactly one pre/post call
+        assert len(pre_copy_called) == 1
+        assert len(post_copy_called) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -978,8 +919,8 @@ class TestCopyWithReferencePusher:
         result = copy(src, "v1.0", dst, "v1.0")
 
         assert descriptors_equal(result, manifest_desc)
-        # Root should have used push_reference
-        assert len(dst.ref_pushes) >= 1
+        # Root must use push_reference exactly once
+        assert len(dst.ref_pushes) == 1
         ref_push_desc, ref_push_ref = dst.ref_pushes[0]
         assert descriptors_equal(ref_push_desc, manifest_desc)
         assert ref_push_ref == "v1.0"
@@ -1593,7 +1534,8 @@ class TestCopyGraphErrorPaths:
             ),
         )
         copy(src, "v1", dst, "v1", opts)
-        assert len(post_copy_called) >= 1
+        # Single blob via mount fallback: exactly one post_copy call
+        assert len(post_copy_called) == 1
 
     def test_mount_empty_source_repositories(self):
         """mount_from returning empty list should fall back to copy."""
@@ -1675,8 +1617,8 @@ class TestPrepareCopyPaths:
                 graph=CopyGraphOptions(on_copy_skipped=lambda d: skipped.append(d))
             ),
         )
-        # Should still be tagged via push_reference
-        assert len(dst.ref_pushes) >= 1
+        # Root skipped but still tagged via push_reference exactly once
+        assert len(dst.ref_pushes) == 1
 
     def test_reference_pusher_on_copy_skipped_non_root(self):
         """on_copy_skipped for non-root with ReferencePusher dst delegates to original."""
@@ -1786,8 +1728,8 @@ class TestPrepareCopyPaths:
             ),
         )
         copy(src, "v1", dst, "v1", opts)
-        # Pre-copy should have been called for all nodes including root
-        assert len(pre_copy_calls) >= 1
+        # pre_copy called for config + layer + manifest = 3 nodes minimum
+        assert len(pre_copy_calls) >= 3
 
     def test_reference_pusher_with_post_copy(self):
         """ReferencePusher path: post_copy should be invoked for the root."""

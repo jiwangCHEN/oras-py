@@ -128,7 +128,10 @@ def _resolve_root(
             raise CopyError("FetchReference", CopyErrorOrigin.SOURCE, e)
 
         try:
-            data = rc.read()
+            try:
+                data = rc.read()
+            except Exception as e:
+                raise CopyError("FetchReference", CopyErrorOrigin.SOURCE, e)
         finally:
             if hasattr(rc, "close"):
                 rc.close()

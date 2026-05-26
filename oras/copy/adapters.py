@@ -79,7 +79,8 @@ class RegistryTarget:
         """Check if content exists. Routes blob vs manifest."""
         if is_manifest(desc):
             url = self._manifest_url(desc["digest"])
-            response = self._registry.do_request(url, "HEAD")
+            headers = {"Accept": _ACCEPT_ALL_MANIFESTS}
+            response = self._registry.do_request(url, "HEAD", headers=headers)
             return response.status_code == 200
         else:
             return self._registry.blob_exists(desc, self._container)
