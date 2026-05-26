@@ -90,6 +90,22 @@ class Registry:
     def __str__(self) -> str:
         return "[oras-client]"
 
+    def as_target(self, container: str):
+        """
+        Return a copy-engine Target adapter for a specific repository.
+
+        The returned RegistryTarget can be passed directly to
+        :func:`oras.copy.copy` as either a source or destination.
+
+        :param container: container URI (e.g., "ghcr.io/user/repo:latest")
+        :type container: str
+        :return: a Target adapter scoped to the given repository
+        :rtype: oras.copy.adapters.RegistryTarget
+        """
+        from oras.copy.adapters import RegistryTarget
+
+        return RegistryTarget(self, container)
+
     def version(self, return_items: bool = False) -> Union[dict, str]:
         """
         Get the version of the client.
@@ -937,6 +953,7 @@ class Registry:
         self,
         container: container_type,
         allowed_media_type: Optional[list] = None,
+        validation_schema: Optional[dict] = None,
     ) -> dict:
         """
         Retrieve a manifest for a package.
@@ -945,21 +962,24 @@ class Registry:
         :type container: oras.container.Container or str
         :param allowed_media_type: one or more allowed media types
         :type allowed_media_type: str
+        :param validation_schema: optional json schema to validate the manifest against
+        :type validation_schema: dict
         """
         # Load authentication configs for the container's registry
         # This ensures credentials are available for authenticated registries
         self.auth.load_configs(container)
 
         if not allowed_media_type:
-            allowed_media_type = [oras.defaults.default_manifest_media_type]
-        headers = {"Accept": ";".join(allowed_media_type)}
+            allowed_media_type = oras.defaults.default_manifest_accepted_media_types
+        headers = {"Accept": ", ".join(allowed_media_type)}
 
         get_manifest = f"{self.prefix}://{container.manifest_url()}"  # type: ignore
         response = self.do_request(get_manifest, "GET", headers=headers)
 
         self._check_200_response(response)
         manifest = response.json()
-        jsonschema.validate(manifest, schema=oras.schemas.manifest)
+        if validation_schema:
+            jsonschema.validate(manifest, schema=validation_schema)
         return manifest
 
     @decorator.retry()
