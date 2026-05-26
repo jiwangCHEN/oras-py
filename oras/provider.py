@@ -90,6 +90,22 @@ class Registry:
     def __str__(self) -> str:
         return "[oras-client]"
 
+    def as_target(self, container: str):
+        """
+        Return a copy-engine Target adapter for a specific repository.
+
+        The returned RegistryTarget can be passed directly to
+        :func:`oras.copy.copy` as either a source or destination.
+
+        :param container: container URI (e.g., "ghcr.io/user/repo:latest")
+        :type container: str
+        :return: a Target adapter scoped to the given repository
+        :rtype: oras.copy.adapters.RegistryTarget
+        """
+        from oras.copy.adapters import RegistryTarget
+
+        return RegistryTarget(self, container)
+
     def version(self, return_items: bool = False) -> Union[dict, str]:
         """
         Get the version of the client.
