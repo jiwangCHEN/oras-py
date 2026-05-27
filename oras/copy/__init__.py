@@ -49,10 +49,10 @@ from oras.copy.content import (
 )
 from oras.copy.adapters import LayoutTarget, RegistryTarget
 from oras.copy.copy import copy
-from oras.copy.descriptor import Descriptor
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.graph import SkipNode
 from oras.copy.options import CopyGraphOptions, CopyOptions
+from oras.types import Descriptor
 
 __all__ = [
     # Core function

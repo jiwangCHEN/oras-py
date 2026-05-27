@@ -11,7 +11,7 @@ __license__ = "Apache-2.0"
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from oras.copy.descriptor import Descriptor
+from oras.types import Descriptor
 
 # Default concurrency matches dockerd and containerd (3 concurrent copies)
 DEFAULT_CONCURRENCY: int = 3

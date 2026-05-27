@@ -17,10 +17,11 @@ import io
 from typing import Optional
 
 from oras.copy import content as content_mod
-from oras.copy.descriptor import Descriptor, descriptors_equal
+from oras.copy.descriptor import descriptors_equal
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.graph import SkipNode, copy_graph
 from oras.copy.options import DEFAULT_MAX_METADATA_BYTES, CopyOptions
+from oras.types import Descriptor
 
 
 def copy(
