@@ -19,11 +19,11 @@ from typing import Callable, List, Optional
 
 from oras.copy import content as content_mod
 from oras.copy.descriptor import (
-    Descriptor,
     descriptors_equal,
     is_manifest,
     remove_foreign_layers,
 )
+from oras.types import Descriptor
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.options import (
     DEFAULT_CONCURRENCY,

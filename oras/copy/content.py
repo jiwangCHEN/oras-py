@@ -15,7 +15,7 @@ import json
 import threading
 from typing import BinaryIO, Callable, List, Optional, Protocol, Tuple, runtime_checkable
 
-from oras.copy.descriptor import Descriptor
+from oras.types import Descriptor
 
 
 # ---------------------------------------------------------------------------

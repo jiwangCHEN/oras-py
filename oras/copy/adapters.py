@@ -22,9 +22,10 @@ from typing import BinaryIO, Callable
 
 import oras.defaults
 import oras.utils
-from oras.copy.descriptor import Descriptor, is_manifest
+from oras.copy.descriptor import is_manifest
 from oras.layout.layout import Layout
 from oras.provider import Registry
+from oras.types import Descriptor
 from oras.utils.fileio import read_json
 
 _VALID_DIGEST_RE = re.compile(r"^[a-z0-9]+:[a-f0-9]+$")

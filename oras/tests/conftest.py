@@ -6,7 +6,7 @@ from typing import BinaryIO, Dict, Optional
 
 import pytest
 
-from oras.copy.descriptor import Descriptor
+from oras.types import Descriptor
 
 
 class InMemoryTarget:

@@ -8,10 +8,18 @@ and creating hashable keys from descriptors for deduplication.
 __author__ = "The ORAS Authors"
 __license__ = "Apache-2.0"
 
-from typing import Any, Dict, Tuple
+from typing import Tuple
 
-# Type alias for OCI descriptors (plain dicts in oras-py)
-Descriptor = Dict[str, Any]
+from oras.types import Descriptor
+
+__all__ = [
+    "Descriptor",
+    "is_manifest",
+    "is_foreign_layer",
+    "descriptor_key",
+    "descriptors_equal",
+    "remove_foreign_layers",
+]
 
 # OCI and Docker manifest media types
 _MANIFEST_MEDIA_TYPES = frozenset(
