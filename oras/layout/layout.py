@@ -9,7 +9,6 @@ import pathlib
 from typing import TYPE_CHECKING
 
 import jsonschema
-import requests
 
 import oras.defaults
 import oras.schemas
@@ -256,29 +255,6 @@ class Layout:
         """
         return self.digest_to_blob_path(digest).exists()
 
-    @staticmethod
-    def _create_layer_dict(
-        blob_path: pathlib.Path, digest: str, media_type: str
-    ) -> dict:
-        """
-        Create a layer dict for upload_blob from blob file.
-
-        :param blob_path: path to blob file
-        :type blob_path: pathlib.Path
-        :param digest: digest with algorithm prefix
-        :type digest: str
-        :param media_type: media type for the blob
-        :type media_type: str
-        :return: layer dict with digest, size, mediaType
-        :rtype: dict
-        """
-        size = blob_path.stat().st_size
-        return {
-            "digest": digest,
-            "size": size,
-            "mediaType": media_type or oras.defaults.unknown_config_media_type,
-        }
-
     def _pull_manifest_blobs(
         self,
         provider: Registry,
@@ -416,9 +392,12 @@ class Layout:
         tag: str = "latest",
         do_chunked: bool = False,
         chunk_size: int = oras.defaults.default_chunksize,
-    ) -> requests.Response:
+    ) -> Descriptor:
         """
         Push an OCI layout to a remote registry.
+
+        Delegates to :meth:`copy_to_registry` which uses the copy engine's
+        DAG-aware graph traversal for concurrent, deduplicated uploads.
 
         :param provider: Registry provider instance for uploading
         :type provider: oras.provider.Registry
@@ -426,12 +405,12 @@ class Layout:
         :type target: str
         :param tag: source tag to read from the layout's index.json annotations (default: "latest")
         :type tag: str
-        :param do_chunked: use chunked upload for large blobs
+        :param do_chunked: deprecated, ignored (kept for backward compatibility)
         :type do_chunked: bool
-        :param chunk_size: chunk size for chunked uploads
+        :param chunk_size: deprecated, ignored (kept for backward compatibility)
         :type chunk_size: int
-        :return: response from the final manifest upload
-        :rtype: requests.Response
+        :return: the root descriptor that was copied
+        :rtype: dict
         :raises FileNotFoundError: if layout or blobs don't exist
         :raises ValueError: if layout is invalid or tag not found
         """
@@ -439,88 +418,7 @@ class Layout:
             raise ValueError(
                 f"Target must include a tag in format 'registry/repository:tag', got: {target}"
             )
-
-        container = provider.get_container(target)
-        ordered_blobs = self.get_ordered_blobs(tag)
-        logger.debug(f"Pushing {len(ordered_blobs)} blobs from OCI layout to {target}")
-
-        # Upload blobs in dependency order
-        last_response = None
-        for i, digest in enumerate(ordered_blobs):
-            blob_path = self.digest_to_blob_path(digest)
-
-            # Verify blob exists (we don't have this check by spec in validation_oci_layout)
-            if not blob_path.exists():
-                raise FileNotFoundError(f"Blob not found: {blob_path}")
-
-            # Last blob will need to be tagged on Push/upload/PUT
-            is_last_blob = i == len(ordered_blobs) - 1
-            try:
-                # Read raw bytes first to avoid reading file twice later below,
-                # to ensure consistency with digest, upload will be performed not using blob_data.
-                with open(blob_path, "rb") as f:
-                    manifest_bytes = f.read()
-                blob_data = json.loads(manifest_bytes)
-                media_type = blob_data.get("mediaType", "")
-
-                # Check if it's a Image manifest or Index
-                if media_type in [
-                    oras.defaults.default_manifest_media_type,
-                    oras.defaults.default_index_media_type,
-                ]:
-                    if media_type == oras.defaults.default_manifest_media_type:
-                        jsonschema.validate(blob_data, schema=oras.schemas.manifest)
-                    else:
-                        jsonschema.validate(blob_data, schema=oras.schemas.index)
-
-                    # Use manifest's mediaType for Content-Type header as required.
-                    content_type = blob_data.get(
-                        "mediaType", oras.defaults.default_manifest_media_type
-                    )
-                    headers = {"Content-Type": content_type}
-
-                    if is_last_blob:
-                        # Final manifest/index - upload with tag
-                        logger.debug(f"Uploading manifest/index with tag: {digest}")
-                        url = f"{provider.prefix}://{container.manifest_url()}"
-                        response = provider.do_request(
-                            url, "PUT", headers=headers, data=manifest_bytes
-                        )
-                    else:
-                        # Intermediate manifest - upload by digest only (no tag yet)
-                        logger.debug(
-                            f"Uploading intermediate manifest by digest: {digest}"
-                        )
-                        url = f"{provider.prefix}://{container.registry}/v2/{container.api_prefix}/manifests/{digest}"
-                        response = provider.do_request(
-                            url, "PUT", headers=headers, data=manifest_bytes
-                        )
-                else:
-                    # It's JSON but not a Image/Index Manifest, upload as blob with layer dict
-                    log_media_type_str = (
-                        f" with mediaType {media_type}" if media_type else ""
-                    )
-                    logger.debug(f"Uploading blob{log_media_type_str}: {digest}")
-                    layer = Layout._create_layer_dict(blob_path, digest, media_type)
-                    response = provider.upload_blob(
-                        str(blob_path), container, layer, do_chunked, chunk_size
-                    )
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Not JSON - upload a binary layer blob
-                logger.debug(f"Uploading layer blob: {digest}")
-                layer = Layout._create_layer_dict(
-                    blob_path, digest, oras.defaults.default_blob_media_type
-                )
-                response = provider.upload_blob(
-                    str(blob_path), container, layer, do_chunked, chunk_size
-                )
-
-            # Check response status per ORAS-py conventions
-            provider._check_200_response(response)
-            last_response = response
-
-        logger.debug(f"Successfully pushed {len(ordered_blobs)} blobs to {target}")
-        return last_response
+        return self.copy_to_registry(provider=provider, target=target, tag=tag)
 
     def as_target(self) -> LayoutTarget:
         """

@@ -612,17 +612,14 @@ def test_push_from_layout_single_arch(
 
     # Create provider and push layout
     provider = oras.provider.Registry(insecure=True)
-    response = Layout(layout_path).push_to_registry(
+    root = Layout(layout_path).push_to_registry(
         provider=provider,
         target=target_layout_single,
         tag="latest",
     )
 
-    # Verify push succeeded
-    assert response.status_code in [
-        200,
-        201,
-    ], f"Push failed with status {response.status_code}"
+    # Verify push succeeded — returns a Descriptor with digest
+    assert root["digest"], "Push returned descriptor without digest"
 
     # Check expected tag exists:
     client = oras.client.OrasClient(hostname=registry, insecure=True)
@@ -633,52 +630,31 @@ def test_push_from_layout_single_arch(
 
 @pytest.mark.with_auth(False)
 def test_push_from_layout_multi_arch(
-    registry, credentials, target_layout_multi, caplog
+    registry, credentials, target_layout_multi
 ):  # using `with_auth` marker requires `credentials` fixture
     """
     Test pushing multi-arch OCI layout (with image index) to registry.
-    Also verifies that shared blobs are only uploaded once (deduplication) via caplog.
     Requires running registry (ORAS_HOST and ORAS_PORT env variables).
     """
-    import logging
-
     # Get path to test data
     layout_path = str(pathlib.Path(__file__).parent / "ocilayout_data/ocilayout2")
 
-    # Enable debug logging to track blob uploads
-    caplog.set_level(logging.DEBUG)
-
     # Create provider and push layout
     provider = oras.provider.Registry(insecure=True)
-    response = Layout(layout_path).push_to_registry(
+    root = Layout(layout_path).push_to_registry(
         provider=provider,
         target=target_layout_multi,
         tag="latest",
     )
 
-    # Verify push succeeded
-    assert response.status_code in [
-        200,
-        201,
-    ], f"Push failed with status {response.status_code}"
+    # Verify push succeeded — returns a Descriptor with digest
+    assert root["digest"], "Push returned descriptor without digest"
 
     # Check expected tag exists:
     client = oras.client.OrasClient(hostname=registry, insecure=True)
     ref_without_tag = target_layout_multi.rsplit(":", 1)[0]
     tags = client.get_tags(ref_without_tag)
     assert "v1" in tags, "Pushed tag not found in registry"
-
-    # Verify deduplication: shared layer should appear at most once in upload logs
-    log_messages = [record.message for record in caplog.records]
-    shared_layer = (
-        "sha256:f64d04d7dad53e091bf339798f95eb0962ab0452f68156304eb90160e8f39f71"
-    )
-    upload_logs = [
-        msg for msg in log_messages if shared_layer in msg and "Uploading" in msg
-    ]
-    assert (
-        len(upload_logs) <= 1
-    ), f"Shared blob should be uploaded at most once, found {len(upload_logs)}"
 
 
 @pytest.mark.with_auth(False)
@@ -885,14 +861,14 @@ def test_pull_to_layout_by_digest(
         pathlib.Path(__file__).parent / "ocilayout_data/ocilayout1"
     )
     provider = oras.provider.Registry(insecure=True)
-    push_response = Layout(source_layout_path).push_to_registry(
+    root = Layout(source_layout_path).push_to_registry(
         provider=provider,
         target=target_layout_single,
         tag="latest",
     )
 
-    # construct a digest-based reference from the Push response
-    digest = push_response.headers["Docker-Content-Digest"]
+    # construct a digest-based reference from the returned descriptor
+    digest = root["digest"]
     ref_without_tag = target_layout_single.rsplit(":", 1)[0]
     digest_ref = f"{ref_without_tag}@{digest}"
 
