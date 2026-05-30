@@ -7,7 +7,7 @@ copy engine's Protocol interfaces (Target, ReadOnlyTarget, etc.).
 RegistryTarget wraps a Registry + container string into a Target +
 ReferencePusher + Mounter scoped to a single repository.
 
-LayoutTarget wraps a Layout directory into a ReadOnlyTarget.
+LayoutTarget wraps a Layout directory into a full read/write Target.
 """
 
 __author__ = "The ORAS Authors"
@@ -17,8 +17,10 @@ import io
 import os
 import pathlib
 import re
+import shutil
 import tempfile
-from typing import BinaryIO, Callable
+import threading
+from typing import TYPE_CHECKING, BinaryIO, Callable, Optional
 
 import oras.defaults
 import oras.utils
@@ -26,7 +28,12 @@ from oras.copy.descriptor import is_manifest
 from oras.layout.layout import Layout
 from oras.provider import Registry
 from oras.types import Descriptor
-from oras.utils.fileio import read_json
+from oras.utils.fileio import read_json, write_json
+
+if TYPE_CHECKING:
+    import requests
+
+    from oras.copy.options import CopyOptions
 
 _VALID_DIGEST_RE = re.compile(r"^[a-z0-9]+:[a-f0-9]+$")
 
@@ -50,10 +57,20 @@ class RegistryTarget:
     by the container string passed at construction time.
     """
 
-    def __init__(self, registry: Registry, container: str):
+    def __init__(
+        self,
+        registry: Registry,
+        container: str,
+        opts: "Optional[CopyOptions]" = None,
+    ):
         self._registry = registry
         self._container = registry.get_container(container)
         self._registry.auth.load_configs(self._container)
+        self._opts = opts
+        # Records the most recent manifest PUT response (from push /
+        # push_reference) so callers like Registry.push can return the real
+        # upload response rather than issuing a follow-up GET.
+        self.last_manifest_response: "Optional[requests.Response]" = None
 
     def _manifest_url(self, ref: str) -> str:
         """Build full manifest URL for a reference (tag or digest)."""
@@ -95,15 +112,31 @@ class RegistryTarget:
             response = self._registry.do_request(
                 url, "PUT", data=data, headers=headers
             )
+            self.last_manifest_response = response
             self._registry._check_200_response(response)
         else:
-            data = content.read()
             tmp = None
             try:
                 tmp = tempfile.NamedTemporaryFile(delete=False)
-                tmp.write(data)
+                # Stream rather than buffer: large layers (and chunked
+                # uploads) must not be fully materialized in memory.
+                shutil.copyfileobj(content, tmp)
                 tmp.close()
-                self._registry.upload_blob(tmp.name, self._container, desc)
+                do_chunked = False
+                chunk_size = oras.defaults.default_chunksize
+                if self._opts is not None:
+                    do_chunked = self._opts.graph.do_chunked
+                    chunk_size = (
+                        self._opts.graph.chunk_size
+                        or oras.defaults.default_chunksize
+                    )
+                self._registry.upload_blob(
+                    tmp.name,
+                    self._container,
+                    desc,
+                    do_chunked=do_chunked,
+                    chunk_size=chunk_size,
+                )
             finally:
                 if tmp is not None:
                     try:
@@ -144,6 +177,7 @@ class RegistryTarget:
         response = self._registry.do_request(
             url, "PUT", data=data, headers=headers
         )
+        self.last_manifest_response = response
         self._registry._check_200_response(response)
 
     def mount(
@@ -189,19 +223,46 @@ class RegistryTarget:
 
 class LayoutTarget:
     """
-    Adapts a Layout directory into the copy engine's ReadOnlyTarget protocol.
+    Adapts a Layout directory into the copy engine's Target protocol.
 
-    Provides read-only access to the OCI layout's content-addressable blobs
-    and resolves references via the layout's index.json annotations.
+    Provides full read/write access to the OCI layout's content-addressable
+    blobs and manages references via the layout's index.json annotations.
+
+    Implements Target (fetch, exists, push, tag, resolve), so it can serve
+    as both source and destination in :func:`oras.copy.copy`.
     """
 
     def __init__(self, layout: Layout):
         self._layout = layout
+        self._index_lock = threading.Lock()
 
     @staticmethod
     def _validate_digest(digest: str) -> None:
         if not _VALID_DIGEST_RE.match(digest):
             raise ValueError(f"invalid digest format: {digest!r}")
+
+    def _ensure_initialized(self) -> None:
+        """Create OCI layout structure (oci-layout, index.json, blobs/) if missing."""
+        layout_dir = pathlib.Path(self._layout._oci_layout_path)
+        layout_dir.mkdir(parents=True, exist_ok=True)
+        (layout_dir / oras.defaults.oci_blobs_dir).mkdir(exist_ok=True)
+
+        oci_layout_path = layout_dir / oras.defaults.oci_layout_file
+        if not oci_layout_path.exists():
+            write_json(
+                {"imageLayoutVersion": oras.defaults.oci_layout_version_pin},
+                str(oci_layout_path),
+            )
+
+        index_path = layout_dir / oras.defaults.oci_image_index_file
+        if not index_path.exists():
+            write_json(
+                {
+                    "schemaVersion": oras.defaults.oci_index_schema_version,
+                    "manifests": [],
+                },
+                str(index_path),
+            )
 
     def fetch(self, desc: Descriptor) -> BinaryIO:
         """Fetch blob content by digest, returning an open file handle."""
@@ -216,6 +277,75 @@ class LayoutTarget:
         self._validate_digest(digest)
         path = self._layout.digest_to_blob_path(digest)
         return path.exists()
+
+    def push(self, desc: Descriptor, content: BinaryIO) -> None:
+        """Write blob content to the layout (content-addressed, deduplicated).
+
+        Matching oras-go's Store.Push: skips silently if the blob already
+        exists (same digest), otherwise writes atomically via a temp file +
+        rename so concurrent writers never observe a partial blob.
+        """
+        digest = desc["digest"]
+        self._validate_digest(digest)
+
+        self._ensure_initialized()
+
+        path = self._layout.digest_to_blob_path(digest)
+        if path.exists():
+            return  # already present — deduplicate silently
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent))
+        try:
+            # Stream rather than buffer: large blobs must not be fully
+            # materialized in memory.
+            with os.fdopen(tmp_fd, "wb") as f:
+                shutil.copyfileobj(content, f)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def tag(self, desc: Descriptor, reference: str) -> None:
+        """Update index.json to associate the descriptor with a reference tag.
+
+        Matching oras-go's Store.Tag: finds an existing index.json entry for
+        this reference and replaces it, or appends a new one.
+        Thread-safe via _index_lock.
+        """
+        self._ensure_initialized()
+
+        layout_dir = pathlib.Path(self._layout._oci_layout_path)
+        index_path = layout_dir / oras.defaults.oci_image_index_file
+
+        new_entry = {
+            "mediaType": desc.get("mediaType", ""),
+            "digest": desc["digest"],
+            "size": desc.get("size", 0),
+            "annotations": {oras.defaults.oci_ref_name_annotation: reference},
+        }
+
+        with self._index_lock:
+            index_data = read_json(str(index_path))
+            manifests = index_data.setdefault("manifests", [])
+
+            for i, entry in enumerate(manifests):
+                if (
+                    entry.get("annotations", {}).get(
+                        oras.defaults.oci_ref_name_annotation
+                    )
+                    == reference
+                ):
+                    manifests[i] = new_entry
+                    break
+            else:
+                manifests.append(new_entry)
+
+            write_json(index_data, str(index_path))
 
     def resolve(self, reference: str) -> Descriptor:
         """Resolve a reference tag to a descriptor via index.json."""

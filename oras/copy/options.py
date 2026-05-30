@@ -42,6 +42,10 @@ class CopyGraphOptions:
         on_mounted: Called when a blob is successfully mounted.
         find_successors: Custom function to discover child nodes of
             a descriptor. If None, content.successors is used.
+        do_chunked: If True, blob uploads to a registry destination use
+            chunked upload. Honored by RegistryTarget.push.
+        chunk_size: Chunk size in bytes for chunked uploads. If <= 0,
+            defaults to oras.defaults.default_chunksize.
     """
 
     concurrency: int = 0
@@ -52,6 +56,8 @@ class CopyGraphOptions:
     mount_from: Optional[Callable[[Descriptor], List[str]]] = None
     on_mounted: Optional[Callable[[Descriptor], None]] = None
     find_successors: Optional[Callable] = None
+    do_chunked: bool = False
+    chunk_size: int = 0
 
 
 @dataclass

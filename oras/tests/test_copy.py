@@ -1620,6 +1620,51 @@ class TestPrepareCopyPaths:
         # Root skipped but still tagged via push_reference exactly once
         assert len(dst.ref_pushes) == 1
 
+    def test_reference_pusher_existing_root_non_ref_fetch_source(self):
+        """Re-push identical content when the source is NOT a ReferenceFetcher.
+
+        With a non-ReferenceFetcher source (e.g. LayoutTarget, as used by
+        Registry.push), resolveRoot only resolves and does not cache the root.
+        If the root already exists at a ReferencePusher destination the whole
+        DAG is skipped and the root is tagged via
+        _copy_cached_node_with_reference, which must fall back to fetching from
+        the source (FetchCached semantics) rather than reading a cache that was
+        never populated.
+
+        Regression test: previously raised FileNotFoundError (cache-only fetch),
+        breaking idempotent re-push of identical content.
+        """
+        src = InMemoryTarget()  # not a ReferenceFetcher
+        dst = InMemoryTargetWithRefPush()
+
+        config_data = b'{"config":true}'
+        config_desc = _make_blob(
+            config_data, "application/vnd.oci.image.config.v1+json"
+        )
+        layer_data = b"layer existing"
+        layer_desc = _make_blob(
+            layer_data, "application/vnd.oci.image.layer.v1.tar+gzip"
+        )
+        manifest_desc, manifest_data = _make_manifest(config_desc, [layer_desc])
+
+        # Everything already present at the destination -> full DAG skip.
+        for desc, data in (
+            (config_desc, config_data),
+            (layer_desc, layer_data),
+            (manifest_desc, manifest_data),
+        ):
+            src.push(desc, io.BytesIO(data))
+            dst.push(desc, io.BytesIO(data))
+        src.tag(manifest_desc, "v1")
+
+        # Must not raise (previously: FileNotFoundError "content not found").
+        root = copy(src, "v1", dst, "v1")
+
+        assert descriptors_equal(root, manifest_desc)
+        # Skipped root is still tagged via push_reference exactly once.
+        assert len(dst.ref_pushes) == 1
+        assert dst.ref_pushes[0][1] == "v1"
+
     def test_reference_pusher_on_copy_skipped_non_root(self):
         """on_copy_skipped for non-root with ReferencePusher dst delegates to original."""
         src = InMemoryTarget()

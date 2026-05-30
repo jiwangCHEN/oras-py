@@ -26,7 +26,7 @@ Content Protocols:
 
 Adapters:
     RegistryTarget      - Adapts Registry + container to Target/ReferencePusher/Mounter
-    LayoutTarget        - Adapts Layout directory to ReadOnlyTarget
+    LayoutTarget        - Adapts Layout directory to Target (full read/write)
 """
 
 __author__ = "The ORAS Authors"

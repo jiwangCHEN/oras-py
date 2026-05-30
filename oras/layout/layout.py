@@ -524,12 +524,12 @@ class Layout:
 
     def as_target(self) -> LayoutTarget:
         """
-        Return a copy-engine ReadOnlyTarget adapter for this layout.
+        Return a copy-engine Target adapter for this layout.
 
         The returned LayoutTarget can be passed directly to
-        :func:`oras.copy.copy` as a source.
+        :func:`oras.copy.copy` as either source or destination.
 
-        :return: a ReadOnlyTarget adapter wrapping this layout
+        :return: a Target adapter wrapping this layout
         :rtype: oras.copy.adapters.LayoutTarget
         """
         from oras.copy.adapters import LayoutTarget
@@ -552,7 +552,10 @@ class Layout:
 
         :param provider: Registry provider instance
         :type provider: oras.provider.Registry
-        :param target: target registry/repository (e.g., "ghcr.io/user/repo:v1.0")
+        :param target: target registry/repository with the destination tag
+            (e.g., "ghcr.io/user/repo:v1.0"). The tag/digest in this URL
+            determines the destination reference at the registry. When no
+            tag is present, "latest" is used.
         :type target: str
         :param tag: source tag to read from the layout's index.json annotations (default: "latest")
         :type tag: str
@@ -563,12 +566,52 @@ class Layout:
         :raises FileNotFoundError: if layout or blobs don't exist
         :raises ValueError: if layout is invalid or tag not found
         """
+        from oras.container import Container
         from oras.copy import copy as copy_fn
         from oras.copy.adapters import LayoutTarget, RegistryTarget
 
         src = LayoutTarget(self)
-        dst = RegistryTarget(provider, target)
-        return copy_fn(src, tag, dst, tag, opts)
+        dst = RegistryTarget(provider, target, opts)
+        dst_container = Container(target)
+        dst_ref = dst_container.digest or dst_container.tag
+        return copy_fn(src, tag, dst, dst_ref, opts)
+
+    def copy_from_registry(
+        self,
+        provider: Registry,
+        source: str,
+        tag: str = "latest",
+        opts: CopyOptions = None,
+    ) -> Descriptor:
+        """
+        Copy content from a remote registry into this layout using the copy engine.
+
+        Uses the copy engine's DAG-aware graph traversal to pull all content
+        from the source registry into this layout directory.
+        This is the recommended way to pull a registry artifact into a layout.
+
+        :param provider: Registry provider instance
+        :type provider: oras.provider.Registry
+        :param source: source registry/repository (e.g., "ghcr.io/user/repo:v1.0")
+        :type source: str
+        :param tag: tag to write in the layout's index.json annotation (default: "latest")
+        :type tag: str
+        :param opts: copy options (default: None for default settings)
+        :type opts: oras.copy.options.CopyOptions
+        :return: the root descriptor that was copied
+        :rtype: dict
+        :raises FileNotFoundError: if source tag/digest is not found in registry
+        :raises ValueError: if source is invalid
+        """
+        from oras.container import Container
+        from oras.copy import copy as copy_fn
+        from oras.copy.adapters import LayoutTarget, RegistryTarget
+
+        src = RegistryTarget(provider, source, opts)
+        dst = LayoutTarget(self)
+        src_container = Container(source)
+        src_ref = src_container.digest or src_container.tag
+        return copy_fn(src, src_ref, dst, tag, opts)
 
     def pull_from_registry(
         self,

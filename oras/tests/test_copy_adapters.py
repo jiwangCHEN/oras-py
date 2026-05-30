@@ -5,7 +5,9 @@ Tests RegistryTarget (with mocked Registry) and LayoutTarget (with real
 filesystem fixtures from the ocilayout_data directory).
 """
 
+import hashlib
 import io
+import json
 import os
 import pathlib
 import threading
@@ -463,6 +465,13 @@ class TestLayoutTargetProtocol:
         adapter = LayoutTarget(layout)
         assert isinstance(adapter, ReadOnlyTarget)
 
+    def test_is_target(self):
+        from oras.layout.layout import Layout
+
+        layout = Layout(_OCILAYOUT1_DIR)
+        adapter = LayoutTarget(layout)
+        assert isinstance(adapter, Target)
+
 
 # ---------------------------------------------------------------------------
 # Tests: LayoutTarget.resolve
@@ -669,3 +678,215 @@ class TestLayoutToMemoryIntegration:
         with open(layer_path, "rb") as f:
             expected = f.read()
         assert dst.get_content(layer_digest) == expected
+
+
+# ---------------------------------------------------------------------------
+# Tests: LayoutTarget.push
+# ---------------------------------------------------------------------------
+
+
+class TestLayoutTargetPush:
+    def test_push_initializes_layout_and_writes_blob(self, tmp_path):
+        """push to a non-existent directory bootstraps the OCI layout structure."""
+        from oras.layout.layout import Layout
+
+        layout_dir = str(tmp_path / "new_layout")
+        layout = Layout(layout_dir, validate=False)
+        adapter = LayoutTarget(layout)
+
+        data = b"hello blob"
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        desc = {"mediaType": "application/octet-stream", "digest": digest, "size": len(data)}
+        adapter.push(desc, io.BytesIO(data))
+
+        blob_path = layout.digest_to_blob_path(digest)
+        assert blob_path.exists()
+        assert blob_path.read_bytes() == data
+
+        # OCI layout structure created
+        assert (tmp_path / "new_layout" / "oci-layout").exists()
+        assert (tmp_path / "new_layout" / "index.json").exists()
+        assert (tmp_path / "new_layout" / "blobs").is_dir()
+
+    def test_push_dedup_is_silent(self, tmp_path):
+        """Pushing the same digest twice completes without error (second is a no-op)."""
+        from oras.layout.layout import Layout
+
+        layout = Layout(str(tmp_path / "layout"), validate=False)
+        adapter = LayoutTarget(layout)
+
+        data = b"dedup content"
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        desc = {"mediaType": "application/octet-stream", "digest": digest, "size": len(data)}
+        adapter.push(desc, io.BytesIO(data))
+        adapter.push(desc, io.BytesIO(data))  # second push must not raise
+
+        assert layout.blob_exists(digest)
+
+    def test_push_invalid_digest_raises(self, tmp_path):
+        """push raises ValueError for a malformed digest string."""
+        from oras.layout.layout import Layout
+
+        layout = Layout(str(tmp_path / "layout"), validate=False)
+        adapter = LayoutTarget(layout)
+
+        desc = {"mediaType": "application/octet-stream", "digest": "not-a-valid-digest", "size": 5}
+        with pytest.raises(ValueError, match="invalid digest"):
+            adapter.push(desc, io.BytesIO(b"hello"))
+
+
+# ---------------------------------------------------------------------------
+# Tests: LayoutTarget.tag
+# ---------------------------------------------------------------------------
+
+
+class TestLayoutTargetTag:
+    def test_tag_creates_index_entry(self, tmp_path):
+        """tag writes a new entry into index.json with the reference annotation."""
+        from oras.layout.layout import Layout
+
+        layout = Layout(str(tmp_path / "layout"), validate=False)
+        adapter = LayoutTarget(layout)
+
+        desc = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:aabbcc",
+            "size": 42,
+        }
+        adapter.tag(desc, "v1.0")
+
+        index = json.loads((tmp_path / "layout" / "index.json").read_text())
+        manifests = index["manifests"]
+        assert len(manifests) == 1
+        assert manifests[0]["digest"] == "sha256:aabbcc"
+        assert manifests[0]["annotations"]["org.opencontainers.image.ref.name"] == "v1.0"
+
+    def test_tag_updates_existing_reference(self, tmp_path):
+        """Tagging the same reference twice replaces the existing entry."""
+        from oras.layout.layout import Layout
+
+        layout = Layout(str(tmp_path / "layout"), validate=False)
+        adapter = LayoutTarget(layout)
+
+        old_desc = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:olddigest",
+            "size": 10,
+        }
+        new_desc = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:newdigest",
+            "size": 20,
+        }
+        adapter.tag(old_desc, "latest")
+        adapter.tag(new_desc, "latest")
+
+        index = json.loads((tmp_path / "layout" / "index.json").read_text())
+        manifests = index["manifests"]
+        assert len(manifests) == 1
+        assert manifests[0]["digest"] == "sha256:newdigest"
+
+    def test_tag_appends_distinct_references(self, tmp_path):
+        """Different references each get their own index.json entry."""
+        from oras.layout.layout import Layout
+
+        layout = Layout(str(tmp_path / "layout"), validate=False)
+        adapter = LayoutTarget(layout)
+
+        desc_a = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:aaa", "size": 1}
+        desc_b = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:bbb", "size": 2}
+        adapter.tag(desc_a, "v1")
+        adapter.tag(desc_b, "v2")
+
+        index = json.loads((tmp_path / "layout" / "index.json").read_text())
+        manifests = index["manifests"]
+        assert len(manifests) == 2
+        digests = {m["digest"] for m in manifests}
+        assert digests == {"sha256:aaa", "sha256:bbb"}
+
+
+# ---------------------------------------------------------------------------
+# Tests: Integration — copy from LayoutTarget to LayoutTarget (layout-to-layout)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(_OCILAYOUT1_DIR),
+    reason="ocilayout1 test fixture not found",
+)
+class TestLayoutToLayoutIntegration:
+    def test_copy_layout_to_layout(self, tmp_path):
+        """Copy ocilayout1's 'latest' tag into a fresh OCI layout on disk."""
+        from oras.layout.layout import Layout
+
+        src_layout = Layout(_OCILAYOUT1_DIR)
+        src = LayoutTarget(src_layout)
+
+        dst_layout = Layout(str(tmp_path / "dst"), validate=False)
+        dst = LayoutTarget(dst_layout)
+
+        root = copy(src, "latest", dst, "latest")
+
+        # Root descriptor matches the manifest
+        assert root["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+        assert (
+            root["digest"]
+            == "sha256:cfcb44ade8c9b2579247ceec82c2f18bf03d956b9b2c050753b7d47d1edd369d"
+        )
+
+        # Destination layout is a valid OCI layout
+        dst_layout.validate()
+
+        # All source blobs are present at the destination
+        for digest in src_layout.get_ordered_blobs("latest"):
+            assert dst_layout.blob_exists(digest), f"missing blob at destination: {digest}"
+
+        # Content is byte-for-byte identical
+        for digest in src_layout.get_ordered_blobs("latest"):
+            src_bytes = src_layout.digest_to_blob_path(digest).read_bytes()
+            dst_bytes = dst_layout.digest_to_blob_path(digest).read_bytes()
+            assert src_bytes == dst_bytes, f"content mismatch: {digest}"
+
+        # Tag resolves correctly at the destination
+        resolved = dst.resolve("latest")
+        assert resolved["digest"] == root["digest"]
+
+    def test_copy_memory_to_layout(self, tmp_path):
+        """Copy content from InMemoryTarget into a LayoutTarget."""
+        from oras.layout.layout import Layout
+        from oras.tests.conftest import InMemoryTarget
+
+        # Populate an InMemoryTarget with a minimal single-layer manifest
+        layer_data = b"layer content"
+        layer_digest = "sha256:" + hashlib.sha256(layer_data).hexdigest()
+        config_data = b"{}"
+        config_digest = "sha256:" + hashlib.sha256(config_data).hexdigest()
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": len(config_data)},
+            "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer_digest, "size": len(layer_data)}],
+        }
+        manifest_data = json.dumps(manifest).encode()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest_data).hexdigest()
+
+        mem = InMemoryTarget()
+        mem.push({"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer_digest, "size": len(layer_data)}, io.BytesIO(layer_data))
+        mem.push({"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": len(config_data)}, io.BytesIO(config_data))
+        mem.push({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest_digest, "size": len(manifest_data)}, io.BytesIO(manifest_data))
+        mem.tag({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest_digest, "size": len(manifest_data)}, "v1")
+
+        dst_layout = Layout(str(tmp_path / "dst"), validate=False)
+        dst = LayoutTarget(dst_layout)
+
+        root = copy(mem, "v1", dst, "v1")
+
+        assert root["digest"] == manifest_digest
+
+        dst_layout.validate()
+        assert dst_layout.blob_exists(layer_digest)
+        assert dst_layout.blob_exists(config_digest)
+        assert dst_layout.blob_exists(manifest_digest)
+
+        resolved = dst.resolve("v1")
+        assert resolved["digest"] == manifest_digest

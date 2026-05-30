@@ -246,14 +246,16 @@ def _copy_cached_node_with_reference(
     reference: str,
 ) -> None:
     """
-    Push a cached node to the destination with a reference tag.
+    Push a node to the destination with a reference tag.
 
-    The content must already be in the proxy cache (as is the case
-    for manifests/indexes that were fetched during graph traversal).
-
-    Matches oras-go's copyCachedNodeWithReference.
+    The content is normally already in the proxy cache (fetched during
+    graph traversal). When the root already exists at the destination its
+    sub-DAG is skipped and never fetched, so the cache may miss; in that
+    case we fall back to fetching from the source via the proxy. This
+    matches oras-go's copyCachedNodeWithReference, which uses FetchCached
+    (cache-or-source), not a cache-only read.
     """
-    rc = proxy.cache.fetch(desc)
+    rc = proxy.fetch(desc)
     try:
         data = rc.read()
     finally:
