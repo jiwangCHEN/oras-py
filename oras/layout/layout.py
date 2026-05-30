@@ -5,8 +5,13 @@ __copyright__ = "Copyright The ORAS Authors."
 __license__ = "Apache-2.0"
 
 import json
+import os
 import pathlib
-from typing import TYPE_CHECKING
+import re
+import shutil
+import tempfile
+import threading
+from typing import TYPE_CHECKING, BinaryIO
 
 import jsonschema
 import requests
@@ -18,14 +23,19 @@ from oras.layout.validation import (
     _validate_index_json,
     _validate_oci_layout_file,
 )
+from oras.container import Container
+from oras.copy import copy as copy_fn
 from oras.logger import logger
 from oras.utils.fileio import read_json, write_json
 
 if TYPE_CHECKING:
-    from oras.copy.adapters import LayoutTarget
     from oras.copy.descriptor import Descriptor
     from oras.copy.options import CopyOptions
     from oras.provider import Registry
+
+
+_VALID_DIGEST_RE = re.compile(r"^[a-z0-9]+:[a-f0-9]+$")
+
 
 
 def NewLayout(path: str, validate: bool = True) -> Layout:
@@ -530,10 +540,8 @@ class Layout:
         :func:`oras.copy.copy` as either source or destination.
 
         :return: a Target adapter wrapping this layout
-        :rtype: oras.copy.adapters.LayoutTarget
+        :rtype: oras.layout.layout.LayoutTarget
         """
-        from oras.copy.adapters import LayoutTarget
-
         return LayoutTarget(self)
 
     def copy_to_registry(
@@ -566,9 +574,8 @@ class Layout:
         :raises FileNotFoundError: if layout or blobs don't exist
         :raises ValueError: if layout is invalid or tag not found
         """
-        from oras.container import Container
-        from oras.copy import copy as copy_fn
-        from oras.copy.adapters import LayoutTarget, RegistryTarget
+        # Imported here to avoid a circular import (oras.provider imports oras.layout).
+        from oras.provider import RegistryTarget
 
         src = LayoutTarget(self)
         dst = RegistryTarget(provider, target, opts)
@@ -603,9 +610,8 @@ class Layout:
         :raises FileNotFoundError: if source tag/digest is not found in registry
         :raises ValueError: if source is invalid
         """
-        from oras.container import Container
-        from oras.copy import copy as copy_fn
-        from oras.copy.adapters import LayoutTarget, RegistryTarget
+        # Imported here to avoid a circular import (oras.provider imports oras.layout).
+        from oras.provider import RegistryTarget
 
         src = RegistryTarget(provider, source, opts)
         dst = LayoutTarget(self)
@@ -708,4 +714,151 @@ class Layout:
 
         logger.debug(
             f"Successfully pulled {target} to OCI layout at {self._oci_layout_path}"
+        )
+
+
+class LayoutTarget:
+    """
+    Adapts a :class:`Layout` directory into the copy engine's Target protocol.
+
+    Provides full read/write access to the OCI layout's content-addressable
+    blobs and manages references via the layout's index.json annotations.
+
+    Implements Target (fetch, exists, push, tag, resolve), so it can serve
+    as both source and destination in :func:`oras.copy.copy`.
+    """
+
+    def __init__(self, layout: Layout):
+        self._layout = layout
+        self._index_lock = threading.Lock()
+
+    @staticmethod
+    def _validate_digest(digest: str) -> None:
+        if not _VALID_DIGEST_RE.match(digest):
+            raise ValueError(f"invalid digest format: {digest!r}")
+
+    def _ensure_initialized(self) -> None:
+        """Create OCI layout structure (oci-layout, index.json, blobs/) if missing."""
+        layout_dir = pathlib.Path(self._layout._oci_layout_path)
+        layout_dir.mkdir(parents=True, exist_ok=True)
+        (layout_dir / oras.defaults.oci_blobs_dir).mkdir(exist_ok=True)
+
+        oci_layout_path = layout_dir / oras.defaults.oci_layout_file
+        if not oci_layout_path.exists():
+            write_json(
+                {"imageLayoutVersion": oras.defaults.oci_layout_version_pin},
+                str(oci_layout_path),
+            )
+
+        index_path = layout_dir / oras.defaults.oci_image_index_file
+        if not index_path.exists():
+            write_json(
+                {
+                    "schemaVersion": oras.defaults.oci_index_schema_version,
+                    "manifests": [],
+                },
+                str(index_path),
+            )
+
+    def fetch(self, desc: Descriptor) -> BinaryIO:
+        """Fetch blob content by digest, returning an open file handle."""
+        digest = desc["digest"]
+        self._validate_digest(digest)
+        path = self._layout.digest_to_blob_path(digest)
+        return open(path, "rb")
+
+    def exists(self, desc: Descriptor) -> bool:
+        """Check if a blob exists on disk."""
+        digest = desc["digest"]
+        self._validate_digest(digest)
+        path = self._layout.digest_to_blob_path(digest)
+        return path.exists()
+
+    def push(self, desc: Descriptor, content: BinaryIO) -> None:
+        """Write blob content to the layout (content-addressed, deduplicated).
+
+        Matching oras-go's Store.Push: skips silently if the blob already
+        exists (same digest), otherwise writes atomically via a temp file +
+        rename so concurrent writers never observe a partial blob.
+        """
+        digest = desc["digest"]
+        self._validate_digest(digest)
+
+        self._ensure_initialized()
+
+        path = self._layout.digest_to_blob_path(digest)
+        if path.exists():
+            return  # already present — deduplicate silently
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent))
+        try:
+            # Stream rather than buffer: large blobs must not be fully
+            # materialized in memory.
+            with os.fdopen(tmp_fd, "wb") as f:
+                shutil.copyfileobj(content, f)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def tag(self, desc: Descriptor, reference: str) -> None:
+        """Update index.json to associate the descriptor with a reference tag.
+
+        Matching oras-go's Store.Tag: finds an existing index.json entry for
+        this reference and replaces it, or appends a new one.
+        Thread-safe via _index_lock.
+        """
+        self._ensure_initialized()
+
+        layout_dir = pathlib.Path(self._layout._oci_layout_path)
+        index_path = layout_dir / oras.defaults.oci_image_index_file
+
+        new_entry = {
+            "mediaType": desc.get("mediaType", ""),
+            "digest": desc["digest"],
+            "size": desc.get("size", 0),
+            "annotations": {oras.defaults.oci_ref_name_annotation: reference},
+        }
+
+        with self._index_lock:
+            index_data = read_json(str(index_path))
+            manifests = index_data.setdefault("manifests", [])
+
+            for i, entry in enumerate(manifests):
+                if (
+                    entry.get("annotations", {}).get(
+                        oras.defaults.oci_ref_name_annotation
+                    )
+                    == reference
+                ):
+                    manifests[i] = new_entry
+                    break
+            else:
+                manifests.append(new_entry)
+
+            write_json(index_data, str(index_path))
+
+    def resolve(self, reference: str) -> Descriptor:
+        """Resolve a reference tag to a descriptor via index.json."""
+        layout_dir = pathlib.Path(self._layout._oci_layout_path)
+        index_path = layout_dir / oras.defaults.oci_image_index_file
+        index_data = read_json(str(index_path))
+        for entry in index_data.get("manifests", []):
+            annotations = entry.get("annotations", {})
+            if (
+                annotations.get(oras.defaults.oci_ref_name_annotation)
+                == reference
+            ):
+                return {
+                    "mediaType": entry.get("mediaType", ""),
+                    "digest": entry.get("digest", ""),
+                    "size": entry.get("size", 0),
+                }
+        raise FileNotFoundError(
+            f"Reference not found in layout index: {reference}"
         )

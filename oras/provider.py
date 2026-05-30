@@ -9,12 +9,22 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import urllib
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from http.cookiejar import DefaultCookiePolicy
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Callable, Generator, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    BinaryIO,
+    Callable,
+    Generator,
+    List,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import jsonschema
 import requests
@@ -27,13 +37,31 @@ import oras.main.login as login
 import oras.oci
 import oras.schemas
 import oras.utils
+from oras.layout import Layout
+from oras.copy.descriptor import is_manifest
+from oras.copy import copy as copy_fn
+from oras.copy.options import CopyOptions
+from oras.layout import Layout
+from oras.layout.layout import LayoutTarget
 from oras.logger import logger
 from oras.types import Descriptor, container_type
 from oras.utils.fileio import PathAndOptionalContent
 
 if TYPE_CHECKING:
-    from oras.copy.adapters import LayoutTarget
+    from oras.layout.layout import LayoutTarget
     from oras.copy.options import CopyOptions
+
+
+# Broad Accept header covering all manifest media types for RegistryTarget.resolve()
+_ACCEPT_ALL_MANIFESTS = ", ".join(
+    [
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ]
+)
+
 
 
 @contextmanager
@@ -108,10 +136,8 @@ class Registry:
         :param container: container URI (e.g., "ghcr.io/user/repo:latest")
         :type container: str
         :return: a Target adapter scoped to the given repository
-        :rtype: oras.copy.adapters.RegistryTarget
+        :rtype: oras.provider.RegistryTarget
         """
-        from oras.copy.adapters import RegistryTarget
-
         return RegistryTarget(self, container)
 
     def version(self, return_items: bool = False) -> Union[dict, str]:
@@ -137,7 +163,7 @@ class Registry:
         # Otherwise return a string that can be printed
         return "\n".join(["%s: %s" % (k, v) for k, v in versions.items()])
 
-    def delete_tags(self, name: str, tags=Union[str, list]) -> List[str]:
+    def delete_tags(self, name: str, tags: Union[str, list]) -> List[str]:
         """
         Delete one or more tags for a unique resource identifier.
 
@@ -463,52 +489,6 @@ class Registry:
             return name
         return oras.container.Container(name, registry=self.hostname)
 
-    # Functions to be deprecated in favor of exposed ones
-    @decorator.ensure_container
-    def _download_blob(
-        self, container: container_type, digest: str, outfile: str
-    ) -> str:
-        logger.warning(
-            "This function is deprecated in favor of download_blob and will be removed by 0.1.2"
-        )
-        return self.download_blob(container, digest, outfile)
-
-    def _put_upload(
-        self, blob: str, container: oras.container.Container, layer: dict
-    ) -> requests.Response:
-        logger.warning(
-            "This function is deprecated in favor of put_upload and will be removed by 0.1.2"
-        )
-        return self.put_upload(blob, container, layer)
-
-    def _chunked_upload(
-        self, blob: str, container: oras.container.Container, layer: dict
-    ) -> requests.Response:
-        logger.warning(
-            "This function is deprecated in favor of chunked_upload and will be removed by 0.1.2"
-        )
-        return self.chunked_upload(blob, container, layer)
-
-    def _upload_manifest(
-        self, manifest: dict, container: oras.container.Container
-    ) -> requests.Response:
-        logger.warning(
-            "This function is deprecated in favor of upload_manifest and will be removed by 0.1.2"
-        )
-        return self.upload_manifest(manifest, container)
-
-    def _upload_blob(
-        self,
-        blob: str,
-        container: container_type,
-        layer: dict,
-        do_chunked: bool = False,
-    ) -> requests.Response:
-        logger.warning(
-            "This function is deprecated in favor of upload_blob and will be removed by 0.1.2"
-        )
-        return self.upload_blob(blob, container, layer, do_chunked)
-
     @decorator.ensure_container
     def download_blob(
         self, container: container_type, digest: str, outfile: str
@@ -763,8 +743,6 @@ class Registry:
         :return: the root descriptor that was copied
         :rtype: dict
         """
-        from oras.copy import copy as copy_fn
-        from oras.copy.adapters import RegistryTarget
 
         src_container = self.get_container(src)
         dst_container = self.get_container(dst)
@@ -818,10 +796,6 @@ class Registry:
         :param subject: optional subject reference
         :type subject: oras.oci.Subject
         """
-        from oras.copy import copy as copy_fn
-        from oras.copy.adapters import LayoutTarget, RegistryTarget
-        from oras.copy.options import CopyOptions
-        from oras.layout import Layout
 
         container = self.get_container(target)
         files = files or []
@@ -1026,7 +1000,6 @@ class Registry:
         :param target: target location to pull from
         :type target: str
         """
-        from oras.layout import Layout
 
         container = self.get_container(target)
         self.auth.load_configs(
@@ -1161,43 +1134,8 @@ class Registry:
         if headers is None:
             headers = {}
 
-        # Make the request and return to calling function, but attempt to use auth token if previously obtained
-        if isinstance(self.auth, oras.auth.TokenAuth) and self.auth.token is not None:
-            headers.update(self.auth.get_auth_header())
-        response = self.session.request(
-            method,
-            url,
-            data=data,
-            json=json,
-            headers=headers,
-            stream=stream,
-            verify=self._tls_verify,
-        )
-
-        # A 401 response is a request for authentication, 404 is not found
-        if response.status_code not in [401, 403]:
-            return response
-
-        # Otherwise, authenticate the request and retry
-        headers, changed = self.auth.authenticate_request(response, headers)
-        if not changed:
-            raise ValueError("Cannot respond to request for authentication.")
-        response = self.session.request(
-            method,
-            url,
-            data=data,
-            json=json,
-            headers=headers,
-            stream=stream,
-            verify=self._tls_verify,
-        )
-
-        # One retry if 403 denied (need new token?)
-        if response.status_code == 403:
-            headers, changed = self.auth.authenticate_request(
-                response, headers, refresh=True
-            )
-            response = self.session.request(
+        def send() -> requests.Response:
+            return self.session.request(
                 method,
                 url,
                 data=data,
@@ -1207,4 +1145,207 @@ class Registry:
                 verify=self._tls_verify,
             )
 
+        # Make the request, attempting to use an auth token if previously obtained
+        if isinstance(self.auth, oras.auth.TokenAuth) and self.auth.token is not None:
+            headers.update(self.auth.get_auth_header())
+        response = send()
+
+        # A 401 response is a request for authentication, 404 is not found
+        if response.status_code not in [401, 403]:
+            return response
+
+        # Otherwise, authenticate the request and retry
+        headers, changed = self.auth.authenticate_request(response, headers)
+        if not changed:
+            raise ValueError("Cannot respond to request for authentication.")
+        response = send()
+
+        # One retry if 403 denied (need new token?)
+        if response.status_code == 403:
+            headers, changed = self.auth.authenticate_request(
+                response, headers, refresh=True
+            )
+            response = send()
+
         return response
+
+
+class RegistryTarget:
+    """
+    Adapts a :class:`Registry` + container string into the copy engine's
+    Target, ReferencePusher, and Mounter protocols.
+
+    All operations are scoped to the single repository identified
+    by the container string passed at construction time.
+    """
+
+    def __init__(
+        self,
+        registry: Registry,
+        container: str,
+        opts: "Optional[CopyOptions]" = None,
+    ):
+        self._registry = registry
+        self._container = registry.get_container(container)
+        self._registry.auth.load_configs(self._container)
+        self._opts = opts
+        # Records the most recent manifest PUT response (from push /
+        # push_reference) so callers like Registry.push can return the real
+        # upload response rather than issuing a follow-up GET.
+        self.last_manifest_response: "Optional[requests.Response]" = None
+
+    def _manifest_url(self, ref: str) -> str:
+        """Build full manifest URL for a reference (tag or digest)."""
+        return f"{self._registry.prefix}://{self._container.manifest_url(ref)}"
+
+    def _upload_blob_url(self) -> str:
+        """Build full upload blob URL."""
+        return f"{self._registry.prefix}://{self._container.upload_blob_url()}"
+
+    def _put_manifest(
+        self, reference: str, data: bytes, media_type: str, record: bool
+    ) -> requests.Response:
+        """PUT manifest bytes to a reference (tag or digest).
+
+        Shared by :meth:`push` (manifest branch), :meth:`tag`, and
+        :meth:`push_reference`. When ``record`` is True the response is stored
+        on ``last_manifest_response`` so callers like ``Registry.push`` can
+        return the real upload response instead of issuing a follow-up GET.
+        """
+        url = self._manifest_url(reference)
+        headers = {"Content-Type": media_type}
+        response = self._registry.do_request(
+            url, "PUT", data=data, headers=headers
+        )
+        if record:
+            self.last_manifest_response = response
+        self._registry._check_200_response(response)
+        return response
+
+    def _head_manifest(self, reference: str) -> requests.Response:
+        """Issue a HEAD for a manifest reference with a broad Accept header."""
+        url = self._manifest_url(reference)
+        headers = {"Accept": _ACCEPT_ALL_MANIFESTS}
+        return self._registry.do_request(url, "HEAD", headers=headers)
+
+    def fetch(self, desc: Descriptor) -> BinaryIO:
+        """Fetch content for a descriptor. Routes blob vs manifest."""
+        if is_manifest(desc):
+            url = self._manifest_url(desc["digest"])
+            headers = {"Accept": desc.get("mediaType", "")}
+            response = self._registry.do_request(url, "GET", headers=headers)
+            self._registry._check_200_response(response)
+            return io.BytesIO(response.content)
+        else:
+            response = self._registry.get_blob(self._container, desc["digest"])
+            self._registry._check_200_response(response)
+            return io.BytesIO(response.content)
+
+    def exists(self, desc: Descriptor) -> bool:
+        """Check if content exists. Routes blob vs manifest."""
+        if is_manifest(desc):
+            return self._head_manifest(desc["digest"]).status_code == 200
+        return self._registry.blob_exists(desc, self._container)
+
+    def push(self, desc: Descriptor, content: BinaryIO) -> None:
+        """Push content for a descriptor. Routes blob vs manifest."""
+        if is_manifest(desc):
+            data = content.read()
+            self._put_manifest(
+                desc["digest"], data, desc.get("mediaType", ""), record=True
+            )
+        else:
+            tmp = None
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False)
+                # Stream rather than buffer: large layers (and chunked
+                # uploads) must not be fully materialized in memory.
+                shutil.copyfileobj(content, tmp)
+                tmp.close()
+                do_chunked = False
+                chunk_size = oras.defaults.default_chunksize
+                if self._opts is not None:
+                    do_chunked = self._opts.graph.do_chunked
+                    chunk_size = (
+                        self._opts.graph.chunk_size
+                        or oras.defaults.default_chunksize
+                    )
+                self._registry.upload_blob(
+                    tmp.name,
+                    self._container,
+                    desc,
+                    do_chunked=do_chunked,
+                    chunk_size=chunk_size,
+                )
+            finally:
+                if tmp is not None:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+
+    def tag(self, desc: Descriptor, reference: str) -> None:
+        """Tag a descriptor with a reference by re-uploading the manifest."""
+        data = self.fetch(desc).read()
+        self._put_manifest(
+            reference, data, desc.get("mediaType", ""), record=False
+        )
+
+    def resolve(self, reference: str) -> Descriptor:
+        """Resolve a reference to a descriptor via HEAD request."""
+        response = self._head_manifest(reference)
+        self._registry._check_200_response(response)
+        return {
+            "mediaType": response.headers.get("Content-Type", ""),
+            "digest": response.headers.get("Docker-Content-Digest", ""),
+            "size": int(response.headers.get("Content-Length", 0)),
+        }
+
+    def push_reference(
+        self, desc: Descriptor, content: BinaryIO, reference: str
+    ) -> None:
+        """Atomic push + tag: PUT manifest bytes to the reference URL."""
+        data = content.read()
+        self._put_manifest(
+            reference, data, desc.get("mediaType", ""), record=True
+        )
+
+    def mount(
+        self,
+        desc: Descriptor,
+        from_repo: str,
+        get_content: Callable[[], BinaryIO],
+    ) -> None:
+        """
+        Attempt cross-repo blob mount, falling back to regular upload.
+
+        POSTs to the blob upload endpoint with mount and from params.
+        If the registry returns 201, the mount succeeded. If 202, the
+        mount failed and we complete the upload session with get_content().
+        """
+        url = oras.utils.append_url_params(
+            self._upload_blob_url(),
+            {"mount": desc["digest"], "from": from_repo},
+        )
+        response = self._registry.do_request(url, "POST")
+        if response.status_code == 201:
+            return  # Mount succeeded
+
+        # Mount failed (202) — fall back to regular upload
+        content = get_content()
+        data = content.read()
+        session_url = self._registry._get_location(response, self._container)
+        if not session_url:
+            raise ValueError("Mount fallback: no session URL in response")
+
+        blob_url = oras.utils.append_url_params(
+            session_url, {"digest": desc["digest"]}
+        )
+        headers = {
+            "Content-Length": str(len(data)),
+            "Content-Type": "application/octet-stream",
+        }
+        response = self._registry.do_request(
+            blob_url, "PUT", data=data, headers=headers
+        )
+        self._registry._check_200_response(response)

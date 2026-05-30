@@ -14,6 +14,8 @@ import oras.defaults
 import oras.oci
 import oras.provider
 import oras.utils
+from oras.copy.options import CopyOptions
+from oras.layout import Layout
 
 here = Path(__file__).resolve().parent
 
@@ -299,8 +301,6 @@ def test_copy_uses_digest_ref_when_present():
 
 def test_copy_passes_opts_to_engine():
     """opts kwarg is forwarded unchanged to the copy engine."""
-    from oras.copy.options import CopyOptions
-
     remote = oras.provider.Registry(insecure=True)
     opts = CopyOptions()
 
@@ -359,8 +359,6 @@ def test_pack_files_to_layout_roundtrip(tmp_path):
     _pack_files_to_layout writes the layer, config, and manifest blobs into an
     OCI layout and tags the manifest, without any registry interaction.
     """
-    from oras.layout import Layout
-
     remote = oras.provider.Registry(insecure=True)
 
     artifact = tmp_path / "hello.txt"
