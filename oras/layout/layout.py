@@ -23,6 +23,8 @@ from oras.layout.validation import (
     _validate_index_json,
     _validate_oci_layout_file,
 )
+from oras.container import Container
+from oras.copy import copy as copy_fn
 from oras.logger import logger
 from oras.utils.fileio import read_json, write_json
 
@@ -572,8 +574,7 @@ class Layout:
         :raises FileNotFoundError: if layout or blobs don't exist
         :raises ValueError: if layout is invalid or tag not found
         """
-        from oras.container import Container
-        from oras.copy import copy as copy_fn
+        # Imported here to avoid a circular import (oras.provider imports oras.layout).
         from oras.provider import RegistryTarget
 
         src = LayoutTarget(self)
@@ -609,8 +610,7 @@ class Layout:
         :raises FileNotFoundError: if source tag/digest is not found in registry
         :raises ValueError: if source is invalid
         """
-        from oras.container import Container
-        from oras.copy import copy as copy_fn
+        # Imported here to avoid a circular import (oras.provider imports oras.layout).
         from oras.provider import RegistryTarget
 
         src = RegistryTarget(provider, source, opts)

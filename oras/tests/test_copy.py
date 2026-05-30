@@ -6,6 +6,7 @@ verifying the core algorithm: graph traversal, deduplication,
 existence checking, blob mounting, tagging, and error handling.
 """
 
+import hashlib
 import io
 import json
 import threading
@@ -38,13 +39,12 @@ from oras.copy.descriptor import (
 )
 from oras.copy.graph import LimitedRegion, copy_graph
 from oras.copy.tracker import StatusTracker
+from oras.layout.layout import LayoutTarget, _VALID_DIGEST_RE
 from oras.tests.conftest import InMemoryTarget  # shared test fixture
 
 
 def _make_blob(data: bytes, media_type: str = "application/octet-stream") -> Descriptor:
     """Create a descriptor for raw blob data."""
-    import hashlib
-
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     return {
         "mediaType": media_type,
@@ -55,8 +55,6 @@ def _make_blob(data: bytes, media_type: str = "application/octet-stream") -> Des
 
 def _make_manifest(config: Descriptor, layers: List[Descriptor]) -> Tuple[Descriptor, bytes]:
     """Create a manifest descriptor and its JSON content."""
-    import hashlib
-
     manifest = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -75,8 +73,6 @@ def _make_manifest(config: Descriptor, layers: List[Descriptor]) -> Tuple[Descri
 
 def _make_index(manifests: List[Descriptor]) -> Tuple[Descriptor, bytes]:
     """Create an index descriptor and its JSON content."""
-    import hashlib
-
     index = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
@@ -1139,8 +1135,6 @@ class TestCopyErrorPaths:
 
         # Push a blob tagged as a manifest media type so successors tries to parse it
         bad_manifest_data = b"not valid json"
-        import hashlib
-
         digest = "sha256:" + hashlib.sha256(bad_manifest_data).hexdigest()
         desc = {
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -1308,8 +1302,6 @@ class TestCopyGraphErrorPaths:
 
         # Manifest with valid descriptor but content will fail to parse
         bad_data = b"not json"
-        import hashlib
-
         digest = "sha256:" + hashlib.sha256(bad_data).hexdigest()
         manifest_desc = {
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -2087,8 +2079,6 @@ class TestDigestVerification:
 
     def test_digest_mismatch_raises_error(self):
         """Tampered content must be rejected."""
-        import hashlib
-
         src = InMemoryTarget()
         dst = InMemoryTarget()
 
@@ -2208,10 +2198,6 @@ class TestLayoutTargetDigestValidation:
 
     def test_rejects_path_traversal_digest(self):
         """Digests containing path traversal must be rejected."""
-        from unittest.mock import MagicMock
-
-        from oras.layout.layout import LayoutTarget
-
         mock_layout = MagicMock()
         mock_layout._oci_layout_path = "/tmp/fake"
         target = LayoutTarget(mock_layout)
@@ -2224,8 +2210,6 @@ class TestLayoutTargetDigestValidation:
 
     def test_accepts_valid_digest(self, tmp_path):
         """Valid hex digests are accepted."""
-        from oras.layout.layout import LayoutTarget, _VALID_DIGEST_RE
-
         assert _VALID_DIGEST_RE.match("sha256:abcdef0123456789")
         assert not _VALID_DIGEST_RE.match("sha256:../../etc/passwd")
         assert not _VALID_DIGEST_RE.match("sha256:ABCDEF")  # uppercase
