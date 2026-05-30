@@ -2210,7 +2210,7 @@ class TestLayoutTargetDigestValidation:
         """Digests containing path traversal must be rejected."""
         from unittest.mock import MagicMock
 
-        from oras.copy.adapters import LayoutTarget
+        from oras.layout.layout import LayoutTarget
 
         mock_layout = MagicMock()
         mock_layout._oci_layout_path = "/tmp/fake"
@@ -2224,7 +2224,7 @@ class TestLayoutTargetDigestValidation:
 
     def test_accepts_valid_digest(self, tmp_path):
         """Valid hex digests are accepted."""
-        from oras.copy.adapters import LayoutTarget, _VALID_DIGEST_RE
+        from oras.layout.layout import LayoutTarget, _VALID_DIGEST_RE
 
         assert _VALID_DIGEST_RE.match("sha256:abcdef0123456789")
         assert not _VALID_DIGEST_RE.match("sha256:../../etc/passwd")

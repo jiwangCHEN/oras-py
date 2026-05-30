@@ -24,9 +24,8 @@ Content Protocols:
     ReferenceFetcher    - Fetch by reference (resolve + fetch in one call)
     Mounter             - Cross-repo blob mounting
 
-Adapters:
-    RegistryTarget      - Adapts Registry + container to Target/ReferencePusher/Mounter
-    LayoutTarget        - Adapts Layout directory to Target (full read/write)
+Concrete targets that bridge this engine to a registry or an OCI layout:
+:class:`oras.provider.RegistryTarget` and :class:`oras.layout.layout.LayoutTarget`.
 """
 
 __author__ = "The ORAS Authors"
@@ -47,7 +46,6 @@ from oras.copy.content import (
     TagResolver,
     Target,
 )
-from oras.copy.adapters import LayoutTarget, RegistryTarget
 from oras.copy.copy import copy
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.graph import SkipNode
@@ -81,7 +79,4 @@ __all__ = [
     "ReferencePusher",
     "ReferenceFetcher",
     "Mounter",
-    # Adapters
-    "RegistryTarget",
-    "LayoutTarget",
 ]
