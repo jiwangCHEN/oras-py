@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORAS Copy Engine — Interactive Algorithm Diagram</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+
+  h1 { text-align: center; padding: 24px 0 8px; font-size: 1.4em; color: #58a6ff; }
+  .subtitle { text-align: center; color: #8b949e; font-size: 0.85em; margin-bottom: 20px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 20px 40px; }
+
+  /* Phase navigation */
+  .phase-nav { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+  .phase-btn {
+    padding: 8px 16px; border: 1px solid #30363d; background: #161b22;
+    color: #8b949e; cursor: pointer; font-family: inherit; font-size: 0.8em;
+    border-radius: 6px; transition: all 0.2s;
+  }
+  .phase-btn:hover { border-color: #58a6ff; color: #c9d1d9; }
+  .phase-btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+  /* Diagram panels */
+  .phase { display: none; }
+  .phase.active { display: block; }
+
+  .diagram {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 24px; margin-bottom: 16px; position: relative; overflow-x: auto;
+  }
+
+  .desc { color: #8b949e; font-size: 0.82em; line-height: 1.6; margin-bottom: 16px; }
+  .desc code { color: #79c0ff; background: #1c2128; padding: 2px 6px; border-radius: 3px; }
+  .desc .fn { color: #d2a8ff; }
+  .desc .file { color: #7ee787; }
+  .desc em { color: #ffa657; font-style: normal; }
+
+  /* SVG diagram styles */
+  svg { display: block; margin: 0 auto; }
+  .node { cursor: pointer; }
+  .node rect { rx: 6; ry: 6; stroke-width: 1.5; transition: all 0.2s; }
+  .node:hover rect { filter: brightness(1.3); stroke-width: 2.5; }
+  .node text { font-family: inherit; font-size: 11px; fill: #c9d1d9; }
+  .node .label { font-weight: bold; }
+  .edge { stroke: #30363d; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+  .edge.active { stroke: #58a6ff; stroke-width: 2; }
+  .edge.success { stroke: #3fb950; stroke-width: 2; }
+  .edge.skip { stroke: #d29922; stroke-width: 1.5; stroke-dasharray: 6 3; }
+
+  /* Tooltip */
+  .tooltip {
+    display: none; position: fixed; background: #1c2128; border: 1px solid #30363d;
+    border-radius: 6px; padding: 12px 16px; max-width: 380px; z-index: 100;
+    font-size: 0.78em; line-height: 1.5; color: #c9d1d9; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tooltip.visible { display: block; }
+  .tooltip .tt-title { color: #d2a8ff; font-weight: bold; margin-bottom: 4px; }
+  .tooltip .tt-file { color: #7ee787; font-size: 0.9em; }
+  .tooltip code { color: #79c0ff; background: #161b22; padding: 1px 4px; border-radius: 2px; }
+
+  /* DAG visualization */
+  .dag-container { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  .dag-tree { flex: 1; min-width: 300px; }
+  .dag-state { flex: 1; min-width: 300px; }
+
+  .dag-node {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+    border: 1px solid #30363d; border-radius: 6px; background: #1c2128;
+    margin: 4px 0; font-size: 0.8em; cursor: pointer; transition: all 0.3s;
+  }
+  .dag-node.processing { border-color: #58a6ff; background: #0d2240; }
+  .dag-node.copied { border-color: #3fb950; background: #0d2d1a; }
+  .dag-node.skipped { border-color: #d29922; background: #2d2200; }
+  .dag-node.waiting { border-color: #30363d; opacity: 0.6; }
+  .dag-node .icon { width: 16px; text-align: center; }
+
+  .dag-level { margin-left: 28px; border-left: 1px solid #30363d; padding-left: 12px; }
+
+  /* Step controls */
+  .step-controls { display: flex; gap: 8px; margin: 16px 0; align-items: center; }
+  .step-btn {
+    padding: 6px 14px; border: 1px solid #30363d; background: #21262d;
+    color: #c9d1d9; cursor: pointer; font-family: inherit; font-size: 0.8em;
+    border-radius: 6px; transition: all 0.2s;
+  }
+  .step-btn:hover { background: #30363d; }
+  .step-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .step-info { color: #8b949e; font-size: 0.8em; flex: 1; }
+
+  /* Semaphore visualization */
+  .sem-bar { display: flex; gap: 4px; margin: 8px 0; }
+  .sem-slot {
+    width: 32px; height: 20px; border: 1px solid #30363d; border-radius: 3px;
+    background: #1c2128; transition: all 0.3s; display: flex; align-items: center;
+    justify-content: center; font-size: 0.65em; color: #8b949e;
+  }
+  .sem-slot.held { background: #1f6feb; border-color: #58a6ff; color: #fff; }
+  .sem-slot.released { background: #0d2d1a; border-color: #3fb950; color: #3fb950; }
+
+  /* Legend */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.75em; color: #8b949e; }
+  .legend-color { width: 12px; height: 12px; border-radius: 2px; border: 1px solid; }
+
+  /* Log area */
+  .log {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    padding: 12px; max-height: 180px; overflow-y: auto; font-size: 0.75em;
+    line-height: 1.7; margin-top: 12px;
+  }
+  .log-entry { color: #8b949e; }
+  .log-entry .log-fn { color: #d2a8ff; }
+  .log-entry .log-ok { color: #3fb950; }
+  .log-entry .log-skip { color: #d29922; }
+  .log-entry .log-info { color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<h1>ORAS Copy Engine Algorithm</h1>
+<p class="subtitle">Python port of oras-go — interactive walkthrough of the copy DAG traversal</p>
+
+<div class="container">
+
+<!-- Phase Navigation -->
+<div class="phase-nav">
+  <button class="phase-btn active" onclick="showPhase(0)">1. Overview</button>
+  <button class="phase-btn" onclick="showPhase(1)">2. copy()</button>
+  <button class="phase-btn" onclick="showPhase(2)">3. copy_graph()</button>
+  <button class="phase-btn" onclick="showPhase(3)">4. _process_node()</button>
+  <button class="phase-btn" onclick="showPhase(4)">5. Concurrency</button>
+  <button class="phase-btn" onclick="showPhase(5)">6. Live Simulation</button>
+</div>
+
+<!-- Phase 0: Overview -->
+<div class="phase active" id="phase-0">
+  <div class="diagram">
+    <div class="desc">
+      The copy engine copies an OCI content DAG from a <em>source</em> to a <em>destination</em>.
+      An OCI image is a tree: an <em>Index</em> points to <em>Manifests</em>, which point to <em>Config</em> + <em>Layers</em> (blobs).
+      The engine traverses this tree <em>children-first</em> (post-order), so layers arrive before the manifest that references them.
+    </div>
+    <svg width="700" height="320" viewBox="0 0 700 320">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- Source side -->
+      <text x="170" y="20" fill="#8b949e" font-size="12" text-anchor="middle" font-family="inherit">Source (ReadOnlyTarget)</text>
+      <g class="node" onclick="showTip(event, 'index', 'OCI Image Index', 'Points to platform-specific manifests.\nmediaType: application/vnd.oci.image.index.v1+json')">
+        <rect x="120" y="35" width="100" height="32" fill="#1c2128" stroke="#d2a8ff"/>
+        <text x="170" y="56" text-anchor="middle" class="label" fill="#d2a8ff">Index</text>
+      </g>
+      <line x1="150" y1="67" x2="80" y2="110" class="edge"/>
+      <line x1="190" y1="67" x2="260" y2="110" class="edge"/>
+      <g class="node" onclick="showTip(event, 'mfst', 'OCI Manifest (linux/amd64)', 'Points to config + layer blobs.\nmediaType: application/vnd.oci.image.manifest.v1+json')">
+        <rect x="20" y="110" width="120" height="32" fill="#1c2128" stroke="#79c0ff"/>
+        <text x="80" y="131" text-anchor="middle" class="label" fill="#79c0ff">Manifest (amd64)</text>
+      </g>
+      <g class="node" onclick="showTip(event, 'mfst2', 'OCI Manifest (linux/arm64)', 'Another platform variant in the index.')">
+        <rect x="200" y="110" width="120" height="32" fill="#1c2128" stroke="#79c0ff"/>
+        <text x="260" y="131" text-anchor="middle" class="label" fill="#79c0ff">Manifest (arm64)</text>
+      </g>
+      <!-- amd64 children -->
+      <line x1="55" y1="142" x2="30" y2="190" class="edge"/>
+      <line x1="105" y1="142" x2="130" y2="190" class="edge"/>
+      <g class="node"><rect x="0" y="190" width="60" height="28" fill="#1c2128" stroke="#3fb950"/><text x="30" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Config</text></g>
+      <g class="node"><rect x="80" y="190" width="100" height="28" fill="#1c2128" stroke="#3fb950"/><text x="130" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Layer (blob)</text></g>
+      <!-- arm64 children -->
+      <line x1="235" y1="142" x2="210" y2="190" class="edge"/>
+      <line x1="285" y1="142" x2="310" y2="190" class="edge"/>
+      <g class="node"><rect x="180" y="190" width="60" height="28" fill="#1c2128" stroke="#3fb950"/><text x="210" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Config</text></g>
+      <g class="node"><rect x="260" y="190" width="100" height="28" fill="#1c2128" stroke="#3fb950"/><text x="310" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Layer (blob)</text></g>
+
+      <!-- Arrow -->
+      <text x="420" y="100" fill="#58a6ff" font-size="28" text-anchor="middle">→</text>
+      <text x="420" y="125" fill="#8b949e" font-size="11" text-anchor="middle">copy()</text>
+
+      <!-- Destination side -->
+      <text x="570" y="20" fill="#8b949e" font-size="12" text-anchor="middle" font-family="inherit">Destination (Target)</text>
+      <g class="node"><rect x="520" y="35" width="100" height="32" fill="#1c2128" stroke="#d2a8ff"/><text x="570" y="56" text-anchor="middle" class="label" fill="#d2a8ff">Index</text></g>
+      <line x1="550" y1="67" x2="490" y2="110" class="edge success"/>
+      <line x1="590" y1="67" x2="650" y2="110" class="edge success"/>
+      <g class="node"><rect x="430" y="110" width="120" height="32" fill="#1c2128" stroke="#79c0ff"/><text x="490" y="131" text-anchor="middle" class="label" fill="#79c0ff">Manifest (amd64)</text></g>
+      <g class="node"><rect x="590" y="110" width="120" height="32" fill="#1c2128" stroke="#79c0ff"/><text x="650" y="131" text-anchor="middle" class="label" fill="#79c0ff">Manifest (arm64)</text></g>
+      <line x1="465" y1="142" x2="445" y2="190" class="edge success"/>
+      <line x1="515" y1="142" x2="535" y2="190" class="edge success"/>
+      <g class="node"><rect x="415" y="190" width="60" height="28" fill="#0d2d1a" stroke="#3fb950"/><text x="445" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Config</text></g>
+      <g class="node"><rect x="485" y="190" width="100" height="28" fill="#0d2d1a" stroke="#3fb950"/><text x="535" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Layer (blob)</text></g>
+      <line x1="625" y1="142" x2="605" y2="190" class="edge success"/>
+      <line x1="675" y1="142" x2="695" y2="190" class="edge success"/>
+      <g class="node"><rect x="575" y="190" width="60" height="28" fill="#0d2d1a" stroke="#3fb950"/><text x="605" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Config</text></g>
+      <g class="node"><rect x="645" y="190" width="100" height="28" fill="#0d2d1a" stroke="#3fb950"/><text x="695" y="209" text-anchor="middle" fill="#3fb950" font-size="10">Layer (blob)</text></g>
+
+      <!-- Copy order annotation -->
+      <text x="350" y="265" fill="#8b949e" font-size="11" text-anchor="middle" font-family="inherit">Copy order: Layers → Configs → Manifests → Index (children before parents)</text>
+      <text x="350" y="285" fill="#8b949e" font-size="11" text-anchor="middle" font-family="inherit">Shared blobs are copied exactly once (deduplication via StatusTracker)</text>
+      <text x="350" y="305" fill="#8b949e" font-size="11" text-anchor="middle" font-family="inherit">Up to 3 nodes copied concurrently (semaphore-gated threads)</text>
+    </svg>
+  </div>
+</div>
+
+<!-- Phase 1: copy() top-level -->
+<div class="phase" id="phase-1">
+  <div class="diagram">
+    <div class="desc">
+      <span class="fn">copy()</span> in <span class="file">oras/copy/copy.py</span> — the top-level entry point.
+      Orchestrates 4 steps before handing off to the graph traversal.
+    </div>
+    <svg width="700" height="400" viewBox="0 0 700 400">
+      <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/></marker></defs>
+
+      <!-- Step 1 -->
+      <g class="node" onclick="showTip(event, 'resolve', '_resolve_root()', 'Resolves src_ref to a Descriptor.\nIf src is a ReferenceFetcher: fetch_reference() for one round-trip.\nOtherwise: src.resolve(src_ref).\nCaches result in proxy for reuse.')">
+        <rect x="250" y="20" width="200" height="40" fill="#1c2128" stroke="#d2a8ff"/>
+        <text x="350" y="36" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">1. _resolve_root()</text>
+        <text x="350" y="52" text-anchor="middle" fill="#8b949e" font-size="10">src_ref → root Descriptor</text>
+      </g>
+      <line x1="350" y1="60" x2="350" y2="90" class="edge" marker-end="url(#arrow2)"/>
+
+      <!-- Step 2 -->
+      <g class="node" onclick="showTip(event, 'maproot', 'MapRoot (optional)', 'User-provided function that transforms the root.\nCommon use: platform selection from a multi-arch index.\nmap_root(proxy, root) → new root Descriptor.\nCaching paused during MapRoot to avoid stale entries.')">
+        <rect x="250" y="90" width="200" height="40" fill="#1c2128" stroke="#ffa657"/>
+        <text x="350" y="106" text-anchor="middle" fill="#ffa657" font-size="11" font-weight="bold">2. opts.map_root()</text>
+        <text x="350" y="122" text-anchor="middle" fill="#8b949e" font-size="10">optional: transform root (e.g. platform select)</text>
+      </g>
+      <line x1="350" y1="130" x2="350" y2="160" class="edge" marker-end="url(#arrow2)"/>
+
+      <!-- Step 3 -->
+      <g class="node" onclick="showTip(event, 'prepare', '_prepare_copy()', 'Sets up hooks so the root gets tagged at destination.\n\nPath A (ReferencePusher): Wraps pre_copy to atomically push+tag root, then SkipNode.\nPath B (plain Target): Wraps post_copy to call dst.tag(root, dst_ref).\n\nAlso wraps on_copy_skipped so root is tagged even if it already exists.')">
+        <rect x="250" y="160" width="200" height="40" fill="#1c2128" stroke="#79c0ff"/>
+        <text x="350" y="176" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="bold">3. _prepare_copy()</text>
+        <text x="350" y="192" text-anchor="middle" fill="#8b949e" font-size="10">install tagging hooks for root</text>
+      </g>
+      <line x1="350" y1="200" x2="350" y2="230" class="edge" marker-end="url(#arrow2)"/>
+
+      <!-- Step 4 -->
+      <g class="node" onclick="showTip(event, 'copygraph', 'copy_graph()', 'The core recursive DAG traversal.\nCreates semaphore(concurrency=3), StatusTracker, cancel_event.\nStarts _process_node(root) via _go().\nSee Phase 3 for details.')">
+        <rect x="250" y="230" width="200" height="40" fill="#1c2128" stroke="#3fb950"/>
+        <text x="350" y="246" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">4. copy_graph()</text>
+        <text x="350" y="262" text-anchor="middle" fill="#8b949e" font-size="10">concurrent DAG traversal + copy</text>
+      </g>
+      <line x1="350" y1="270" x2="350" y2="300" class="edge" marker-end="url(#arrow2)"/>
+
+      <!-- Return -->
+      <g class="node">
+        <rect x="275" y="300" width="150" height="32" fill="#0d2d1a" stroke="#3fb950"/>
+        <text x="350" y="320" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">return root Descriptor</text>
+      </g>
+
+      <!-- Side annotations -->
+      <rect x="20" y="30" width="180" height="60" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="110" y="50" text-anchor="middle" fill="#79c0ff" font-size="10">CacheProxy created here</text>
+      <text x="110" y="66" text-anchor="middle" fill="#8b949e" font-size="9">MemoryStorage cache, 4MiB cap</text>
+      <text x="110" y="80" text-anchor="middle" fill="#8b949e" font-size="9">caches manifests/indexes in RAM</text>
+      <line x1="200" y1="55" x2="250" y2="40" class="edge" stroke-dasharray="4 3"/>
+
+      <rect x="500" y="160" width="180" height="52" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="590" y="180" text-anchor="middle" fill="#ffa657" font-size="10">opts shallow-copied</text>
+      <text x="590" y="196" text-anchor="middle" fill="#8b949e" font-size="9">prevents mutation of caller's opts</text>
+      <line x1="500" y1="186" x2="450" y2="180" class="edge" stroke-dasharray="4 3"/>
+    </svg>
+  </div>
+</div>
+
+<!-- Phase 2: copy_graph() -->
+<div class="phase" id="phase-2">
+  <div class="diagram">
+    <div class="desc">
+      <span class="fn">copy_graph()</span> in <span class="file">oras/copy/graph.py</span> — initializes concurrency primitives, then kicks off <code>_process_node</code> for the root.
+    </div>
+    <svg width="700" height="340" viewBox="0 0 700 340">
+      <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/></marker></defs>
+
+      <!-- Init block -->
+      <rect x="150" y="10" width="400" height="90" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="350" y="30" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">Initialization</text>
+      <text x="170" y="50" fill="#8b949e" font-size="10">semaphore = Semaphore(concurrency)    # default 3</text>
+      <text x="170" y="66" fill="#8b949e" font-size="10">tracker   = StatusTracker()             # dedup via dict+Event</text>
+      <text x="170" y="82" fill="#8b949e" font-size="10">cancel    = threading.Event()            # first error cancels all</text>
+
+      <line x1="350" y1="100" x2="350" y2="130" class="edge" marker-end="url(#arrow3)"/>
+
+      <!-- _go call -->
+      <g class="node" onclick="showTip(event, 'go', '_go(semaphore, _process_node, [root], cancel)', 'For each item in the list:\n1. semaphore.acquire() — blocks until a slot opens\n2. Create LimitedRegion(semaphore)\n3. Spawn daemon Thread → fn(region, item)\n4. Thread calls region.end() in finally block\n\nAfter all threads: join(), propagate first error.\nThreads (not a pool) to avoid recursive deadlock.')">
+        <rect x="200" y="130" width="300" height="40" fill="#1c2128" stroke="#58a6ff"/>
+        <text x="350" y="146" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">_go(sem, _process_node, [root], cancel)</text>
+        <text x="350" y="162" text-anchor="middle" fill="#8b949e" font-size="10">semaphore-gated thread spawn</text>
+      </g>
+
+      <line x1="350" y1="170" x2="350" y2="200" class="edge" marker-end="url(#arrow3)"/>
+
+      <!-- Thread fan-out -->
+      <g class="node" onclick="showTip(event, 'process', '_process_node(region, desc)', 'The core per-node logic. See Phase 4.')">
+        <rect x="200" y="200" width="300" height="35" fill="#1c2128" stroke="#d2a8ff"/>
+        <text x="350" y="222" text-anchor="middle" fill="#d2a8ff" font-size="11">_process_node(region, root)  →  see Phase 4</text>
+      </g>
+
+      <line x1="350" y1="235" x2="350" y2="265" class="edge" marker-end="url(#arrow3)"/>
+
+      <!-- Error check -->
+      <g class="node">
+        <rect x="225" y="265" width="250" height="35" fill="#1c2128" stroke="#f85149"/>
+        <text x="350" y="287" text-anchor="middle" fill="#f85149" font-size="11">if first_error: raise first_error</text>
+      </g>
+
+      <!-- Side: semaphore explanation -->
+      <rect x="10" y="140" width="170" height="80" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="95" y="158" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">Why threads, not a pool?</text>
+      <text x="95" y="174" text-anchor="middle" fill="#8b949e" font-size="9">ThreadPoolExecutor deadlocks</text>
+      <text x="95" y="188" text-anchor="middle" fill="#8b949e" font-size="9">on recursive DAG submission:</text>
+      <text x="95" y="202" text-anchor="middle" fill="#8b949e" font-size="9">parents hold slots, children</text>
+      <text x="95" y="216" text-anchor="middle" fill="#8b949e" font-size="9">can never acquire one.</text>
+    </svg>
+  </div>
+</div>
+
+<!-- Phase 3: _process_node -->
+<div class="phase" id="phase-3">
+  <div class="diagram">
+    <div class="desc">
+      <span class="fn">_process_node(region, desc)</span> — the heart of the algorithm. Runs once per node in the DAG.
+      Each node goes through: <em>dedup check</em> → <em>exists check</em> → <em>find children</em> → <em>recurse</em> → <em>copy self</em>.
+    </div>
+    <svg width="750" height="520" viewBox="0 0 750 520">
+      <defs><marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/></marker></defs>
+
+      <!-- Step 1: dedup -->
+      <g class="node" onclick="showTip(event, 'dedup', 'tracker.try_commit(desc)', 'StatusTracker: dict of descriptor_key → Event.\nIf key not present: claim it (committed=True), caller must process and set event.\nIf already present: another thread owns it (committed=False), wait on event.\nGuarantees each descriptor processed exactly once.')">
+        <rect x="250" y="10" width="250" height="40" fill="#1c2128" stroke="#d2a8ff"/>
+        <text x="375" y="26" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">tracker.try_commit(desc)</text>
+        <text x="375" y="42" text-anchor="middle" fill="#8b949e" font-size="10">deduplication: claim or wait</text>
+      </g>
+      <!-- Already claimed branch -->
+      <line x1="500" y1="30" x2="600" y2="30" class="edge skip"/>
+      <rect x="600" y="15" width="130" height="30" fill="#1c2128" stroke="#d29922" rx="6"/>
+      <text x="665" y="35" text-anchor="middle" fill="#d29922" font-size="10">wait → return</text>
+
+      <line x1="375" y1="50" x2="375" y2="80" class="edge" marker-end="url(#arrow4)"/>
+
+      <!-- Step 2: exists -->
+      <g class="node" onclick="showTip(event, 'exists', 'dst.exists(desc)', 'Check if the content already exists at the destination.\nIf yes: call on_copy_skipped hook and return early.\nIf no: proceed to find children and copy.')">
+        <rect x="250" y="80" width="250" height="40" fill="#1c2128" stroke="#79c0ff"/>
+        <text x="375" y="96" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="bold">dst.exists(desc)</text>
+        <text x="375" y="112" text-anchor="middle" fill="#8b949e" font-size="10">already at destination?</text>
+      </g>
+      <!-- Already exists branch -->
+      <line x1="500" y1="100" x2="600" y2="100" class="edge skip"/>
+      <rect x="600" y="85" width="130" height="30" fill="#1c2128" stroke="#d29922" rx="6"/>
+      <text x="665" y="105" text-anchor="middle" fill="#d29922" font-size="10">on_copy_skipped</text>
+
+      <line x1="375" y1="120" x2="375" y2="150" class="edge" marker-end="url(#arrow4)"/>
+
+      <!-- Step 3: successors -->
+      <g class="node" onclick="showTip(event, 'succ', 'find_successors(proxy, desc)', 'Discovers child nodes.\nManifest → [config, layers, subject]\nIndex → [manifests, subject]\nBlob → [] (leaf node)\n\nFetches through CacheProxy, so manifests/indexes get cached in memory for later.')">
+        <rect x="250" y="150" width="250" height="40" fill="#1c2128" stroke="#7ee787"/>
+        <text x="375" y="166" text-anchor="middle" fill="#7ee787" font-size="11" font-weight="bold">find_successors(proxy, desc)</text>
+        <text x="375" y="182" text-anchor="middle" fill="#8b949e" font-size="10">discover children + filter foreign layers</text>
+      </g>
+
+      <line x1="375" y1="190" x2="375" y2="220" class="edge" marker-end="url(#arrow4)"/>
+
+      <!-- Step 4: release + recurse -->
+      <g class="node" onclick="showTip(event, 'release', 'region.end() → _go(children) → region.start()', 'CRITICAL for deadlock prevention:\n1. region.end() releases this node\'s semaphore slot\n2. _go() spawns threads for children, each acquiring their own slot\n3. Children run _process_node recursively\n4. After all children complete, region.start() re-acquires a slot\n\nWithout this release, parents hold all slots and children starve.')">
+        <rect x="200" y="220" width="350" height="55" fill="#1c2128" stroke="#ffa657"/>
+        <text x="375" y="238" text-anchor="middle" fill="#ffa657" font-size="11" font-weight="bold">region.end()  — release semaphore slot</text>
+        <text x="375" y="254" text-anchor="middle" fill="#58a6ff" font-size="11">_go(sem, _process_node, children, cancel)</text>
+        <text x="375" y="268" text-anchor="middle" fill="#ffa657" font-size="11" font-weight="bold">region.start() — re-acquire slot</text>
+      </g>
+
+      <line x1="375" y1="275" x2="375" y2="310" class="edge" marker-end="url(#arrow4)"/>
+
+      <!-- Step 5: copy self -->
+      <g class="node" onclick="showTip(event, 'copyself', 'Copy this node', 'Two paths based on whether content is in cache:\n\nCached (manifests/indexes):\n  _copy_node(proxy.cache, dst, desc)\n  → pre_copy hook → _do_copy_node → post_copy hook\n\nNot cached (blobs):\n  _mount_or_copy_node(src, dst, desc)\n  → try mount from candidate repos\n  → fall back to _copy_node(src, dst, desc)')">
+        <rect x="200" y="310" width="350" height="55" fill="#1c2128" stroke="#3fb950"/>
+        <text x="375" y="328" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">Copy this node (children done)</text>
+        <text x="375" y="346" text-anchor="middle" fill="#8b949e" font-size="10">if cached: _copy_node(cache → dst)</text>
+        <text x="375" y="360" text-anchor="middle" fill="#8b949e" font-size="10">else: _mount_or_copy_node(src → dst)</text>
+      </g>
+
+      <line x1="375" y1="365" x2="375" y2="395" class="edge" marker-end="url(#arrow4)"/>
+
+      <!-- done.set -->
+      <g class="node">
+        <rect x="275" y="395" width="200" height="30" fill="#1c2128" stroke="#3fb950"/>
+        <text x="375" y="414" text-anchor="middle" fill="#3fb950" font-size="10">done.set() — unblock waiters</text>
+      </g>
+
+      <!-- _do_copy_node detail -->
+      <rect x="10" y="330" width="170" height="80" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="95" y="348" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">_do_copy_node()</text>
+      <text x="95" y="364" text-anchor="middle" fill="#8b949e" font-size="9">1. src.fetch(desc) → data</text>
+      <text x="95" y="378" text-anchor="middle" fill="#8b949e" font-size="9">2. verify digest + size</text>
+      <text x="95" y="392" text-anchor="middle" fill="#8b949e" font-size="9">3. dst.push(desc, data)</text>
+      <text x="95" y="406" text-anchor="middle" fill="#8b949e" font-size="9">4. FileExistsError → skip</text>
+      <line x1="180" y1="370" x2="200" y2="340" class="edge" stroke-dasharray="4 3"/>
+
+      <!-- finally block -->
+      <rect x="10" y="440" width="170" height="50" fill="#1c2128" stroke="#30363d" rx="6"/>
+      <text x="95" y="458" text-anchor="middle" fill="#f85149" font-size="10">on error:</text>
+      <text x="95" y="474" text-anchor="middle" fill="#8b949e" font-size="9">cancel_event.set()</text>
+      <text x="95" y="488" text-anchor="middle" fill="#8b949e" font-size="9">first_error captured</text>
+    </svg>
+  </div>
+</div>
+
+<!-- Phase 4: Concurrency model -->
+<div class="phase" id="phase-4">
+  <div class="diagram">
+    <div class="desc">
+      The concurrency model uses <em>unbounded daemon threads</em> gated by a <em>counting semaphore</em>.
+      <code>LimitedRegion</code> prevents deadlock by letting parents release their slot while waiting for children.
+    </div>
+    <svg width="700" height="360" viewBox="0 0 700 360">
+      <defs><marker id="arrow5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/></marker></defs>
+
+      <text x="350" y="20" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="bold">Semaphore(3) — 3 concurrent slots</text>
+
+      <!-- Timeline -->
+      <line x1="50" y1="50" x2="650" y2="50" stroke="#30363d" stroke-width="1"/>
+      <text x="30" y="54" fill="#8b949e" font-size="10" text-anchor="end">t</text>
+
+      <!-- Slot labels -->
+      <text x="20" y="90" fill="#8b949e" font-size="10" text-anchor="end">Slot 1</text>
+      <text x="20" y="140" fill="#8b949e" font-size="10" text-anchor="end">Slot 2</text>
+      <text x="20" y="190" fill="#8b949e" font-size="10" text-anchor="end">Slot 3</text>
+
+      <!-- Index processing -->
+      <rect x="50" y="75" width="100" height="25" fill="#0d2240" stroke="#58a6ff" rx="4"/>
+      <text x="100" y="92" text-anchor="middle" fill="#58a6ff" font-size="9">Index</text>
+
+      <!-- Index releases slot (LimitedRegion.end) -->
+      <rect x="150" y="75" width="10" height="25" fill="#2d2200" stroke="#d29922" rx="2"/>
+      <text x="155" y="115" fill="#d29922" font-size="8" text-anchor="middle">end()</text>
+
+      <!-- Children use the freed slot -->
+      <rect x="170" y="75" width="120" height="25" fill="#0d2240" stroke="#79c0ff" rx="4"/>
+      <text x="230" y="92" text-anchor="middle" fill="#79c0ff" font-size="9">Manifest amd64</text>
+
+      <rect x="170" y="125" width="120" height="25" fill="#0d2240" stroke="#79c0ff" rx="4"/>
+      <text x="230" y="142" text-anchor="middle" fill="#79c0ff" font-size="9">Manifest arm64</text>
+
+      <!-- Manifest releases, layers use slots -->
+      <rect x="290" y="75" width="10" height="25" fill="#2d2200" stroke="#d29922" rx="2"/>
+
+      <rect x="310" y="75" width="80" height="25" fill="#0d2d1a" stroke="#3fb950" rx="4"/>
+      <text x="350" y="92" text-anchor="middle" fill="#3fb950" font-size="9">Layer A</text>
+
+      <rect x="310" y="125" width="80" height="25" fill="#0d2d1a" stroke="#3fb950" rx="4"/>
+      <text x="350" y="142" text-anchor="middle" fill="#3fb950" font-size="9">Config A</text>
+
+      <rect x="310" y="175" width="80" height="25" fill="#0d2d1a" stroke="#3fb950" rx="4"/>
+      <text x="350" y="192" text-anchor="middle" fill="#3fb950" font-size="9">Layer B</text>
+
+      <!-- Manifest re-acquires and copies -->
+      <rect x="400" y="75" width="10" height="25" fill="#162d0d" stroke="#3fb950" rx="2"/>
+      <text x="405" y="115" fill="#3fb950" font-size="8" text-anchor="middle">start()</text>
+
+      <rect x="420" y="75" width="80" height="25" fill="#0d2240" stroke="#79c0ff" rx="4"/>
+      <text x="460" y="92" text-anchor="middle" fill="#79c0ff" font-size="9">Push Mfst A</text>
+
+      <rect x="400" y="125" width="80" height="25" fill="#0d2d1a" stroke="#3fb950" rx="4"/>
+      <text x="440" y="142" text-anchor="middle" fill="#3fb950" font-size="9">Config B</text>
+
+      <rect x="490" y="125" width="80" height="25" fill="#0d2240" stroke="#79c0ff" rx="4"/>
+      <text x="530" y="142" text-anchor="middle" fill="#79c0ff" font-size="9">Push Mfst B</text>
+
+      <!-- Index re-acquires and copies -->
+      <rect x="510" y="75" width="80" height="25" fill="#0d2240" stroke="#d2a8ff" rx="4"/>
+      <text x="550" y="92" text-anchor="middle" fill="#d2a8ff" font-size="9">Push Index</text>
+
+      <!-- Annotations -->
+      <text x="350" y="240" text-anchor="middle" fill="#8b949e" font-size="11" font-family="inherit">At most 3 slots active at any time. Parents release while children run.</text>
+
+      <!-- Deadlock explanation -->
+      <rect x="60" y="260" width="280" height="80" fill="#1c2128" stroke="#f85149" rx="6"/>
+      <text x="200" y="280" text-anchor="middle" fill="#f85149" font-size="10" font-weight="bold">Without LimitedRegion (DEADLOCK)</text>
+      <text x="200" y="296" text-anchor="middle" fill="#8b949e" font-size="9">Sem(3): Index holds slot 1</text>
+      <text x="200" y="310" text-anchor="middle" fill="#8b949e" font-size="9">Mfst A holds slot 2, Mfst B holds slot 3</text>
+      <text x="200" y="324" text-anchor="middle" fill="#8b949e" font-size="9">Layers need a slot → blocked forever</text>
+
+      <rect x="380" y="260" width="280" height="80" fill="#1c2128" stroke="#3fb950" rx="6"/>
+      <text x="520" y="280" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">With LimitedRegion (CORRECT)</text>
+      <text x="520" y="296" text-anchor="middle" fill="#8b949e" font-size="9">Index calls end() → releases slot 1</text>
+      <text x="520" y="310" text-anchor="middle" fill="#8b949e" font-size="9">Mfst A calls end() → releases slot 2</text>
+      <text x="520" y="324" text-anchor="middle" fill="#8b949e" font-size="9">Layers acquire freed slots → no deadlock</text>
+    </svg>
+  </div>
+</div>
+
+<!-- Phase 5: Live Simulation -->
+<div class="phase" id="phase-5">
+  <div class="diagram">
+    <div class="desc">
+      Step through the copy of a multi-arch image (Index → 2 Manifests → 2 Configs + 2 Layers, one layer shared).
+      Click <em>Step</em> to advance, or <em>Auto</em> to animate.
+    </div>
+
+    <div class="step-controls">
+      <button class="step-btn" id="btn-reset" onclick="simReset()">Reset</button>
+      <button class="step-btn" id="btn-step" onclick="simStep()">Step →</button>
+      <button class="step-btn" id="btn-auto" onclick="simAuto()">Auto ▶</button>
+      <span class="step-info" id="step-info">Ready — click Step or Auto</span>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-color" style="background:#1c2128;border-color:#30363d"></div> Waiting</div>
+      <div class="legend-item"><div class="legend-color" style="background:#0d2240;border-color:#58a6ff"></div> Processing</div>
+      <div class="legend-item"><div class="legend-color" style="background:#0d2d1a;border-color:#3fb950"></div> Copied</div>
+      <div class="legend-item"><div class="legend-color" style="background:#2d2200;border-color:#d29922"></div> Skipped (dedup)</div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <span style="color:#8b949e;font-size:0.8em">Semaphore slots:</span>
+      <div class="sem-bar" id="sem-bar">
+        <div class="sem-slot" id="slot-0">1</div>
+        <div class="sem-slot" id="slot-1">2</div>
+        <div class="sem-slot" id="slot-2">3</div>
+      </div>
+    </div>
+
+    <div class="dag-container">
+      <div class="dag-tree">
+        <div class="dag-node waiting" id="n-index"><span class="icon">📦</span> Index</div>
+        <div class="dag-level">
+          <div class="dag-node waiting" id="n-mfst-a"><span class="icon">📋</span> Manifest (amd64)</div>
+          <div class="dag-level">
+            <div class="dag-node waiting" id="n-cfg-a"><span class="icon">⚙</span> Config A</div>
+            <div class="dag-node waiting" id="n-layer-shared"><span class="icon">💾</span> Layer (shared)</div>
+          </div>
+          <div class="dag-node waiting" id="n-mfst-b"><span class="icon">📋</span> Manifest (arm64)</div>
+          <div class="dag-level">
+            <div class="dag-node waiting" id="n-cfg-b"><span class="icon">⚙</span> Config B</div>
+            <div class="dag-node waiting" id="n-layer-shared-2"><span class="icon">💾</span> Layer (shared) <small style="color:#d29922">same digest</small></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="log" id="sim-log"></div>
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// Phase switching
+function showPhase(i) {
+  document.querySelectorAll('.phase').forEach((p,idx) => {
+    p.classList.toggle('active', idx===i);
+  });
+  document.querySelectorAll('.phase-btn').forEach((b,idx) => {
+    b.classList.toggle('active', idx===i);
+  });
+}
+
+// Tooltips
+function showTip(e, id, title, text) {
+  const tip = document.getElementById('tooltip');
+  tip.innerHTML = `<div class="tt-title">${title}</div>${text.replace(/\n/g,'<br>')}`;
+  tip.classList.add('visible');
+  const rect = e.currentTarget.getBoundingClientRect();
+  tip.style.left = Math.min(rect.left, window.innerWidth - 400) + 'px';
+  tip.style.top = (rect.bottom + 8) + 'px';
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.node')) {
+    document.getElementById('tooltip').classList.remove('visible');
+  }
+});
+
+// --- Simulation ---
+const steps = [
+  { desc: '_go([Index]) — Index acquires slot 1', slots: [1,0,0], nodes: {index:'processing'}, log: '<span class="log-fn">_process_node</span>(Index) — acquired slot 1' },
+  { desc: 'Index: tracker.try_commit → claimed', slots: [1,0,0], nodes: {}, log: '<span class="log-info">tracker</span>: Index claimed (committed=true)' },
+  { desc: 'Index: dst.exists → false', slots: [1,0,0], nodes: {}, log: '<span class="log-info">exists</span>: Index not at destination' },
+  { desc: 'Index: find_successors → [Mfst A, Mfst B]', slots: [1,0,0], nodes: {}, log: '<span class="log-fn">successors</span>(Index) → [Manifest amd64, Manifest arm64]' },
+  { desc: 'Index: region.end() — releases slot 1 for children', slots: [0,0,0], nodes: {}, log: '<span class="log-skip">LimitedRegion.end()</span>: Index releases slot 1' },
+  { desc: '_go([Mfst A, Mfst B]) — both acquire slots', slots: [1,1,0], nodes: {'mfst-a':'processing','mfst-b':'processing'}, log: '<span class="log-fn">_process_node</span>(Mfst A) slot 1, <span class="log-fn">_process_node</span>(Mfst B) slot 2' },
+  { desc: 'Mfst A: successors → [Config A, Layer shared]', slots: [1,1,0], nodes: {}, log: '<span class="log-fn">successors</span>(Mfst A) → [Config A, Layer shared]' },
+  { desc: 'Mfst A: region.end(), Mfst B: successors → [Config B, Layer shared]', slots: [0,1,0], nodes: {}, log: '<span class="log-skip">end()</span>: Mfst A releases. <span class="log-fn">successors</span>(Mfst B) → [Config B, Layer shared]' },
+  { desc: 'Mfst B: region.end(). Children acquire slots.', slots: [1,1,1], nodes: {'cfg-a':'processing','layer-shared':'processing','cfg-b':'processing'}, log: '<span class="log-skip">end()</span>: Mfst B releases. Config A (slot1), Layer (slot2), Config B (slot3)' },
+  { desc: 'Config A: leaf → _do_copy_node → pushed to dst', slots: [1,1,1], nodes: {'cfg-a':'copied'}, log: '<span class="log-ok">_do_copy_node</span>: Config A fetched, verified, pushed' },
+  { desc: 'Layer shared: leaf → _do_copy_node → pushed to dst', slots: [0,1,1], nodes: {'layer-shared':'copied'}, log: '<span class="log-ok">_do_copy_node</span>: Layer (shared) fetched, verified, pushed. Slot freed.' },
+  { desc: 'Config B: leaf → _do_copy_node → pushed to dst', slots: [0,0,1], nodes: {'cfg-b':'copied'}, log: '<span class="log-ok">_do_copy_node</span>: Config B fetched, verified, pushed. Slot freed.' },
+  { desc: 'Mfst B children: Layer (shared) → tracker says already committed → wait+skip', slots: [0,0,0], nodes: {'layer-shared-2':'skipped'}, log: '<span class="log-skip">tracker</span>: Layer (shared) already committed by Mfst A\'s child. <span class="log-skip">Dedup skip.</span>' },
+  { desc: 'Mfst A: region.start() re-acquires slot. Copies manifest.', slots: [1,0,0], nodes: {'mfst-a':'copied'}, log: '<span class="log-ok">start()</span>: Mfst A re-acquires. <span class="log-ok">_copy_node</span>: Manifest amd64 pushed (from cache)' },
+  { desc: 'Mfst B: region.start() re-acquires slot. Copies manifest.', slots: [0,1,0], nodes: {'mfst-b':'copied'}, log: '<span class="log-ok">start()</span>: Mfst B re-acquires. <span class="log-ok">_copy_node</span>: Manifest arm64 pushed (from cache)' },
+  { desc: 'Index: region.start() re-acquires. Root push_reference (atomic tag).', slots: [1,0,0], nodes: {'index':'copied'}, log: '<span class="log-ok">start()</span>: Index re-acquires. <span class="log-ok">push_reference</span>: Index pushed + tagged atomically' },
+  { desc: 'Done! 6 unique nodes copied, 1 dedup skip, root tagged.', slots: [0,0,0], nodes: {}, log: '<span class="log-ok">copy() complete</span> → returns root Descriptor' },
+];
+
+let simIdx = -1;
+let autoTimer = null;
+const nodeStates = {};
+
+function simReset() {
+  simIdx = -1;
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  document.querySelectorAll('.dag-node').forEach(n => { n.className = 'dag-node waiting'; });
+  document.querySelectorAll('.sem-slot').forEach(s => { s.className = 'sem-slot'; });
+  document.getElementById('sim-log').innerHTML = '';
+  document.getElementById('step-info').textContent = 'Ready — click Step or Auto';
+  document.getElementById('btn-step').disabled = false;
+  document.getElementById('btn-auto').disabled = false;
+  Object.keys(nodeStates).forEach(k => delete nodeStates[k]);
+}
+
+function simStep() {
+  simIdx++;
+  if (simIdx >= steps.length) {
+    document.getElementById('btn-step').disabled = true;
+    document.getElementById('btn-auto').disabled = true;
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    return;
+  }
+  const s = steps[simIdx];
+  document.getElementById('step-info').textContent = `Step ${simIdx+1}/${steps.length}: ${s.desc}`;
+
+  // Update semaphore
+  s.slots.forEach((v, i) => {
+    const el = document.getElementById('slot-'+i);
+    el.className = v ? 'sem-slot held' : 'sem-slot';
+  });
+
+  // Update nodes
+  Object.entries(s.nodes).forEach(([id, state]) => {
+    nodeStates[id] = state;
+  });
+  Object.entries(nodeStates).forEach(([id, state]) => {
+    const el = document.getElementById('n-'+id);
+    if (el) el.className = 'dag-node ' + state;
+  });
+
+  // Log
+  const log = document.getElementById('sim-log');
+  log.innerHTML += `<div class="log-entry">[${simIdx+1}] ${s.log}</div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function simAuto() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; return; }
+  autoTimer = setInterval(() => {
+    if (simIdx >= steps.length - 1) { clearInterval(autoTimer); autoTimer = null; return; }
+    simStep();
+  }, 1200);
+}
+</script>
+</body>
+</html>
