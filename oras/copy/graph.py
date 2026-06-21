@@ -19,7 +19,8 @@ import threading
 from typing import Callable, List, Optional
 
 from oras.content import storage
-from oras.content.memory import CacheProxy, MemoryStorage
+from oras.content.memory import MemoryStorage
+from oras.content.storage import CacheProxy
 from oras.copy.descriptor import (
     is_manifest,
     remove_foreign_layers,

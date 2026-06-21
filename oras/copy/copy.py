@@ -17,7 +17,8 @@ import io
 from typing import Optional
 
 from oras.content import storage
-from oras.content.memory import CacheProxy, FetcherFunc, MemoryStorage
+from oras.content.memory import MemoryStorage
+from oras.content.storage import CacheProxy, FetcherFunc
 from oras.copy.descriptor import descriptors_equal
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.graph import SkipNode, copy_graph, successors
@@ -77,6 +78,7 @@ def copy(
         dst_ref = src_ref
 
     # Create caching proxy for non-leaf nodes (manifests, indexes)
+    # Ref: https://github.com/oras-project/oras-go/blob/3d90c80fc54d1eeb81dad4073cd9873345e9aebf/content.go#L225
     max_bytes = opts.graph.max_metadata_bytes
     if max_bytes <= 0:
         max_bytes = DEFAULT_MAX_METADATA_BYTES

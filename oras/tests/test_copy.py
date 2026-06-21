@@ -16,7 +16,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from oras.content.layout import LayoutTarget, _VALID_DIGEST_RE
-from oras.content.memory import CacheProxy, FetcherFunc, MemoryStorage
+from oras.content.memory import MemoryStorage
+from oras.content.storage import CacheProxy, FetcherFunc
 from oras.copy import (
     CopyError,
     CopyErrorOrigin,
