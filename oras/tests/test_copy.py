@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from oras.content.layout import LayoutTarget, _VALID_DIGEST_RE
+from oras.content.memory import CacheProxy, FetcherFunc, MemoryStorage
 from oras.copy import (
     CopyError,
     CopyErrorOrigin,
@@ -24,12 +26,6 @@ from oras.copy import (
     SkipNode,
     copy,
 )
-from oras.copy.content import (
-    CacheProxy,
-    FetcherFunc,
-    MemoryStorage,
-    successors,
-)
 from oras.copy.descriptor import (
     descriptor_key,
     descriptors_equal,
@@ -37,9 +33,8 @@ from oras.copy.descriptor import (
     is_manifest,
     remove_foreign_layers,
 )
-from oras.copy.graph import LimitedRegion, copy_graph
+from oras.copy.graph import LimitedRegion, copy_graph, successors
 from oras.copy.tracker import StatusTracker
-from oras.layout.layout import LayoutTarget, _VALID_DIGEST_RE
 from oras.tests.conftest import InMemoryTarget  # shared test fixture
 
 

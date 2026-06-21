@@ -25,25 +25,21 @@ Content Protocols:
     Mounter             - Cross-repo blob mounting
 
 Concrete targets that bridge this engine to a registry or an OCI layout:
-:class:`oras.provider.RegistryTarget` and :class:`oras.layout.layout.LayoutTarget`.
+:class:`oras.content.registry.RegistryTarget` and
+:class:`oras.content.layout.LayoutTarget`.
 """
 
 __author__ = "The ORAS Authors"
 __copyright__ = "Copyright The ORAS Authors."
 __license__ = "Apache-2.0"
 
-from oras.copy.content import (
-    Fetcher,
+from oras.content.storage import (
     Mounter,
-    Pusher,
     ReadOnlyStorage,
     ReadOnlyTarget,
     ReferenceFetcher,
     ReferencePusher,
-    Resolver,
     Storage,
-    Tagger,
-    TagResolver,
     Target,
 )
 from oras.copy.copy import copy
@@ -65,17 +61,12 @@ __all__ = [
     "CopyErrorOrigin",
     # Types
     "Descriptor",
-    # Content Protocols
-    "Fetcher",
-    "Pusher",
+    # Storage / Target Protocols
     "Storage",
     "ReadOnlyStorage",
-    "Resolver",
-    "Tagger",
-    "TagResolver",
     "Target",
     "ReadOnlyTarget",
-    # Registry Protocols
+    # Optional capability Protocols
     "ReferencePusher",
     "ReferenceFetcher",
     "Mounter",
