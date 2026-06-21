@@ -28,15 +28,11 @@ if TYPE_CHECKING:
     from oras.provider import Registry
 
 
-# Broad Accept header covering all manifest media types for RegistryTarget.resolve()
-_ACCEPT_ALL_MANIFESTS = ", ".join(
-    [
-        "application/vnd.oci.image.manifest.v1+json",
-        "application/vnd.oci.image.index.v1+json",
-        "application/vnd.docker.distribution.manifest.v2+json",
-        "application/vnd.docker.distribution.manifest.list.v2+json",
-    ]
-)
+# Broad Accept header covering all manifest media types for RegistryTarget.resolve().
+# Derived from the canonical list in oras.defaults so the supported manifest
+# media types live in exactly one place (shared with _is_manifest below and
+# Registry.get_manifest in provider.py).
+_ACCEPT_ALL_MANIFESTS = ", ".join(oras.defaults.default_manifest_accepted_media_types)
 
 
 def _is_manifest(desc: Descriptor) -> bool:

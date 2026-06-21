@@ -49,29 +49,6 @@ class LayoutTarget:
         if not _VALID_DIGEST_RE.match(digest):
             raise ValueError(f"invalid digest format: {digest!r}")
 
-    def _ensure_initialized(self) -> None:
-        """Create OCI layout structure (oci-layout, index.json, blobs/) if missing."""
-        layout_dir = pathlib.Path(self._layout._oci_layout_path)
-        layout_dir.mkdir(parents=True, exist_ok=True)
-        (layout_dir / oras.defaults.oci_blobs_dir).mkdir(exist_ok=True)
-
-        oci_layout_path = layout_dir / oras.defaults.oci_layout_file
-        if not oci_layout_path.exists():
-            write_json(
-                {"imageLayoutVersion": oras.defaults.oci_layout_version_pin},
-                str(oci_layout_path),
-            )
-
-        index_path = layout_dir / oras.defaults.oci_image_index_file
-        if not index_path.exists():
-            write_json(
-                {
-                    "schemaVersion": oras.defaults.oci_index_schema_version,
-                    "manifests": [],
-                },
-                str(index_path),
-            )
-
     def fetch(self, desc: Descriptor) -> BinaryIO:
         """Fetch blob content by digest, returning an open file handle."""
         digest = desc["digest"]
@@ -83,8 +60,7 @@ class LayoutTarget:
         """Check if a blob exists on disk."""
         digest = desc["digest"]
         self._validate_digest(digest)
-        path = self._layout.digest_to_blob_path(digest)
-        return path.exists()
+        return self._layout.blob_exists(digest)
 
     def push(self, desc: Descriptor, content: BinaryIO) -> None:
         """Write blob content to the layout (content-addressed, deduplicated).
@@ -96,7 +72,7 @@ class LayoutTarget:
         digest = desc["digest"]
         self._validate_digest(digest)
 
-        self._ensure_initialized()
+        self._layout.init()
 
         path = self._layout.digest_to_blob_path(digest)
         if path.exists():
@@ -125,7 +101,7 @@ class LayoutTarget:
         this reference and replaces it, or appends a new one.
         Thread-safe via _index_lock.
         """
-        self._ensure_initialized()
+        self._layout.init()
 
         layout_dir = pathlib.Path(self._layout._oci_layout_path)
         index_path = layout_dir / oras.defaults.oci_image_index_file
@@ -157,20 +133,13 @@ class LayoutTarget:
 
     def resolve(self, reference: str) -> Descriptor:
         """Resolve a reference tag to a descriptor via index.json."""
-        layout_dir = pathlib.Path(self._layout._oci_layout_path)
-        index_path = layout_dir / oras.defaults.oci_image_index_file
-        index_data = read_json(str(index_path))
-        for entry in index_data.get("manifests", []):
-            annotations = entry.get("annotations", {})
-            if (
-                annotations.get(oras.defaults.oci_ref_name_annotation)
-                == reference
-            ):
-                return {
-                    "mediaType": entry.get("mediaType", ""),
-                    "digest": entry.get("digest", ""),
-                    "size": entry.get("size", 0),
-                }
-        raise FileNotFoundError(
-            f"Reference not found in layout index: {reference}"
-        )
+        entry = self._layout.find_index_entry(reference)
+        if entry is None:
+            raise FileNotFoundError(
+                f"Reference not found in layout index: {reference}"
+            )
+        return {
+            "mediaType": entry.get("mediaType", ""),
+            "digest": entry.get("digest", ""),
+            "size": entry.get("size", 0),
+        }

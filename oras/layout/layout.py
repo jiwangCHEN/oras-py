@@ -164,26 +164,37 @@ class Layout:
         :raises FileNotFoundError: if layout, index, or blob files don't exist
         :raises ValueError: if tag annotation not found or invalid structure
         """
+        # Find the manifest with matching tag annotation (usually `:latest` for oci-layout on disk)
+        manifest_entry = self.find_index_entry(tag)
+        if manifest_entry is None:
+            raise ValueError(f"Tag '{tag}' not found in index")
+
+        # Collect blobs in dependency order
+        collected: list[str] = []
+        self._process_manifest(manifest_entry["digest"], collected)
+        return collected
+
+    def find_index_entry(self, reference: str) -> dict | None:
+        """
+        Find the index.json manifest entry tagged with the given reference.
+
+        Looks up the entry whose ref-name annotation
+        (``org.opencontainers.image.ref.name``) matches ``reference``.
+
+        :param reference: the reference (tag) to look up in index.json annotations
+        :type reference: str
+        :return: the matching manifest entry, or None if no entry matches
+        :rtype: dict | None
+        """
         index_file = (
             pathlib.Path(self._oci_layout_path) / oras.defaults.oci_image_index_file
         )
         index_data = read_json(str(index_file))
-
-        # Find the manifest with matching tag annotation (usually `:latest` for oci-layout on disk)
-        target_digest = None
         for manifest_entry in index_data.get("manifests", []):
             annotations = manifest_entry.get("annotations", {})
-            if annotations.get(oras.defaults.oci_ref_name_annotation) == tag:
-                target_digest = manifest_entry["digest"]
-                break
-
-        if not target_digest:
-            raise ValueError(f"Tag '{tag}' not found in index")
-
-        # Collect blobs in dependency order
-        collected = []
-        self._process_manifest(target_digest, collected)
-        return collected
+            if annotations.get(oras.defaults.oci_ref_name_annotation) == reference:
+                return manifest_entry
+        return None
 
     def _process_manifest(self, digest: str, collected: list[str]) -> None:
         """
@@ -259,6 +270,35 @@ class Layout:
         :rtype: bool
         """
         return self.digest_to_blob_path(digest).exists()
+
+    def init(self) -> None:
+        """
+        Create the on-disk OCI image layout skeleton if it does not yet exist.
+
+        Ensures the layout directory, ``blobs`` directory, ``oci-layout``
+        marker file, and an empty ``index.json`` exist per the OCI Image
+        Layout Specification. Idempotent: existing files are left untouched.
+        """
+        layout_dir = pathlib.Path(self._oci_layout_path)
+        layout_dir.mkdir(parents=True, exist_ok=True)
+        (layout_dir / oras.defaults.oci_blobs_dir).mkdir(exist_ok=True)
+
+        oci_layout_file = layout_dir / oras.defaults.oci_layout_file
+        if not oci_layout_file.exists():
+            write_json(
+                {"imageLayoutVersion": oras.defaults.oci_layout_version_pin},
+                str(oci_layout_file),
+            )
+
+        index_file = layout_dir / oras.defaults.oci_image_index_file
+        if not index_file.exists():
+            write_json(
+                {
+                    "schemaVersion": oras.defaults.oci_index_schema_version,
+                    "manifests": [],
+                },
+                str(index_file),
+            )
 
     @staticmethod
     def _create_layer_dict(
