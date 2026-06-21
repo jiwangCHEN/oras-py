@@ -41,7 +41,7 @@ class CopyGraphOptions:
             a blob may be mounted. Tried in order; falls back to copy.
         on_mounted: Called when a blob is successfully mounted.
         find_successors: Custom function to discover child nodes of
-            a descriptor. If None, content.successors is used.
+            a descriptor. If None, oras.copy.graph.successors is used.
         do_chunked: If True, blob uploads to a registry destination use
             chunked upload. Honored by RegistryTarget.push.
         chunk_size: Chunk size in bytes for chunked uploads. If <= 0,

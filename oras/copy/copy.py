@@ -16,18 +16,20 @@ import copy as copy_mod
 import io
 from typing import Optional
 
-from oras.copy import content as content_mod
+from oras.content import storage
+from oras.content.memory import MemoryStorage
+from oras.content.storage import CacheProxy, FetcherFunc
 from oras.copy.descriptor import descriptors_equal
 from oras.copy.errors import CopyError, CopyErrorOrigin
-from oras.copy.graph import SkipNode, copy_graph
+from oras.copy.graph import SkipNode, copy_graph, successors
 from oras.copy.options import DEFAULT_MAX_METADATA_BYTES, CopyOptions
 from oras.types import Descriptor
 
 
 def copy(
-    src: content_mod.ReadOnlyTarget,
+    src: storage.ReadOnlyTarget,
     src_ref: str,
-    dst: content_mod.Target,
+    dst: storage.Target,
     dst_ref: str = "",
     opts: Optional[CopyOptions] = None,
 ) -> Descriptor:
@@ -76,12 +78,11 @@ def copy(
         dst_ref = src_ref
 
     # Create caching proxy for non-leaf nodes (manifests, indexes)
+    # Ref: https://github.com/oras-project/oras-go/blob/3d90c80fc54d1eeb81dad4073cd9873345e9aebf/content.go#L225
     max_bytes = opts.graph.max_metadata_bytes
     if max_bytes <= 0:
         max_bytes = DEFAULT_MAX_METADATA_BYTES
-    proxy = content_mod.CacheProxy(
-        src, content_mod.MemoryStorage(), max_bytes
-    )
+    proxy = CacheProxy(src, MemoryStorage(), max_bytes)
 
     # Resolve the source reference to a root descriptor
     root = _resolve_root(src, src_ref, proxy)
@@ -106,9 +107,9 @@ def copy(
 
 
 def _resolve_root(
-    src: content_mod.ReadOnlyTarget,
+    src: storage.ReadOnlyTarget,
     src_ref: str,
-    proxy: content_mod.CacheProxy,
+    proxy: CacheProxy,
 ) -> Descriptor:
     """
     Resolve a source reference to a root descriptor.
@@ -116,12 +117,12 @@ def _resolve_root(
     If the source supports ReferenceFetcher, uses fetch_reference for
     a single round-trip (resolve + fetch). Otherwise, just resolves.
 
-    The fetched content is fed through content.successors to ensure
+    The fetched content is fed through ``successors`` to ensure
     it gets cached in the proxy for later use during graph traversal.
 
     Matches oras-go's resolveRoot.
     """
-    if isinstance(src, content_mod.ReferenceFetcher):
+    if isinstance(src, storage.ReferenceFetcher):
         # Optimization: resolve + fetch in one call
         try:
             root, rc = src.fetch_reference(src_ref)
@@ -144,9 +145,9 @@ def _resolve_root(
                 return io.BytesIO(data)
             raise ValueError("fetching only root node expected")
 
-        fetcher = content_mod.FetcherFunc(fetch_root)
+        fetcher = FetcherFunc(fetch_root)
         try:
-            content_mod.successors(fetcher, root)
+            successors(fetcher, root)
         except Exception as e:
             raise CopyError("Successors", CopyErrorOrigin.SOURCE, e)
 
@@ -163,9 +164,9 @@ def _resolve_root(
 
 
 def _prepare_copy(
-    dst: content_mod.Target,
+    dst: storage.Target,
     dst_ref: str,
-    proxy: content_mod.CacheProxy,
+    proxy: CacheProxy,
     root: Descriptor,
     opts: CopyOptions,
 ) -> None:
@@ -183,7 +184,7 @@ def _prepare_copy(
 
     Matches oras-go's prepareCopy.
     """
-    if isinstance(dst, content_mod.ReferencePusher):
+    if isinstance(dst, storage.ReferencePusher):
         # Path A: Atomic push + tag via ReferencePusher
         original_pre_copy = opts.graph.pre_copy
 
@@ -224,7 +225,7 @@ def _prepare_copy(
             return
 
         # Root was skipped but still needs to be tagged
-        if isinstance(dst, content_mod.ReferencePusher):
+        if isinstance(dst, storage.ReferencePusher):
             _copy_cached_node_with_reference(proxy, dst, desc, dst_ref)
             return
 
@@ -240,8 +241,8 @@ def _prepare_copy(
 
 
 def _copy_cached_node_with_reference(
-    proxy: content_mod.CacheProxy,
-    dst: content_mod.ReferencePusher,
+    proxy: CacheProxy,
+    dst: storage.ReferencePusher,
     desc: Descriptor,
     reference: str,
 ) -> None:

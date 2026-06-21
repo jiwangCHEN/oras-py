@@ -14,16 +14,17 @@ __license__ = "Apache-2.0"
 
 import hashlib
 import io
+import json
 import threading
 from typing import Callable, List, Optional
 
-from oras.copy import content as content_mod
+from oras.content import storage
+from oras.content.memory import MemoryStorage
+from oras.content.storage import CacheProxy
 from oras.copy.descriptor import (
-    descriptors_equal,
     is_manifest,
     remove_foreign_layers,
 )
-from oras.types import Descriptor
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.options import (
     DEFAULT_CONCURRENCY,
@@ -31,6 +32,8 @@ from oras.copy.options import (
     CopyGraphOptions,
 )
 from oras.copy.tracker import StatusTracker
+from oras.types import Descriptor
+
 
 # Sentinel exception class: raise SkipNode() from pre_copy to signal
 # that the descriptor was already handled and should be skipped.
@@ -119,11 +122,71 @@ def _go(
         raise errors[0]
 
 
+# ---------------------------------------------------------------------------
+# Successor discovery (the default ``find_successors``)
+# ---------------------------------------------------------------------------
+
+
+def successors(fetcher, desc: Descriptor) -> List[Descriptor]:
+    """
+    Find the successors (child nodes) of an OCI descriptor.
+
+    For manifests: returns config + layers + subject.
+    For indexes: returns manifests + subject.
+    For blobs (leaf nodes): returns empty list.
+
+    Matches oras-go's content.Successors.
+    """
+    media_type = desc.get("mediaType", "")
+
+    # OCI Image Manifest
+    if media_type == "application/vnd.oci.image.manifest.v1+json":
+        return _manifest_successors(fetcher, desc)
+
+    # OCI Image Index
+    if media_type == "application/vnd.oci.image.index.v1+json":
+        return _index_successors(fetcher, desc)
+
+    # Docker Manifest v2
+    if media_type == "application/vnd.docker.distribution.manifest.v2+json":
+        return _manifest_successors(fetcher, desc)
+
+    # Docker Manifest List
+    if media_type == "application/vnd.docker.distribution.manifest.list.v2+json":
+        return _index_successors(fetcher, desc)
+
+    # Leaf node (blobs, configs, etc.)
+    return []
+
+
+def _manifest_successors(fetcher, desc: Descriptor) -> List[Descriptor]:
+    """Extract successors from a manifest (config + layers + subject)."""
+    data = fetcher.fetch(desc)
+    manifest = json.loads(data.read())
+    result: List[Descriptor] = []
+    if "config" in manifest and manifest["config"]:
+        result.append(manifest["config"])
+    result.extend(manifest.get("layers", []))
+    if "subject" in manifest and manifest["subject"]:
+        result.append(manifest["subject"])
+    return result
+
+
+def _index_successors(fetcher, desc: Descriptor) -> List[Descriptor]:
+    """Extract successors from an index (manifests + subject)."""
+    data = fetcher.fetch(desc)
+    index = json.loads(data.read())
+    result: List[Descriptor] = list(index.get("manifests", []))
+    if "subject" in index and index["subject"]:
+        result.append(index["subject"])
+    return result
+
+
 def copy_graph(
-    src: content_mod.ReadOnlyStorage,
-    dst: content_mod.Storage,
+    src: storage.ReadOnlyStorage,
+    dst: storage.Storage,
     root: Descriptor,
-    proxy: Optional[content_mod.CacheProxy] = None,
+    proxy: Optional[CacheProxy] = None,
     opts: Optional[CopyGraphOptions] = None,
 ) -> None:
     """
@@ -154,9 +217,7 @@ def copy_graph(
         max_bytes = opts.max_metadata_bytes
         if max_bytes <= 0:
             max_bytes = DEFAULT_MAX_METADATA_BYTES
-        proxy = content_mod.CacheProxy(
-            src, content_mod.MemoryStorage(), max_bytes
-        )
+        proxy = CacheProxy(src, MemoryStorage(), max_bytes)
 
     # Initialize concurrency via semaphore (not a bounded thread pool,
     # which would deadlock on recursive submissions)
@@ -167,7 +228,7 @@ def copy_graph(
     tracker = StatusTracker()
 
     # Choose successor discovery function
-    find_successors = opts.find_successors or content_mod.successors
+    find_successors = opts.find_successors or successors
 
     # Shared error state for cancellation
     cancel_event = threading.Event()
@@ -257,8 +318,8 @@ def copy_graph(
 
 
 def _copy_node(
-    src: content_mod.ReadOnlyStorage,
-    dst: content_mod.Storage,
+    src: storage.ReadOnlyStorage,
+    dst: storage.Storage,
     desc: Descriptor,
     opts: CopyGraphOptions,
 ) -> None:
@@ -304,8 +365,8 @@ def _verify_digest(data: bytes, expected_digest: str) -> None:
 
 
 def _do_copy_node(
-    src: content_mod.ReadOnlyStorage,
-    dst: content_mod.Storage,
+    src: storage.ReadOnlyStorage,
+    dst: storage.Storage,
     desc: Descriptor,
 ) -> None:
     """
@@ -347,8 +408,8 @@ def _do_copy_node(
 
 
 def _mount_or_copy_node(
-    src: content_mod.ReadOnlyStorage,
-    dst: content_mod.Storage,
+    src: storage.ReadOnlyStorage,
+    dst: storage.Storage,
     desc: Descriptor,
     opts: CopyGraphOptions,
 ) -> None:
@@ -365,7 +426,7 @@ def _mount_or_copy_node(
         _copy_node(src, dst, desc, opts)
         return
 
-    if not isinstance(dst, content_mod.Mounter):
+    if not isinstance(dst, storage.Mounter):
         _copy_node(src, dst, desc, opts)
         return
 
@@ -418,5 +479,3 @@ def _mount_or_copy_node(
 
 class _SkipSource(Exception):
     """Internal sentinel for skipping to the next mount source."""
-
-    pass
