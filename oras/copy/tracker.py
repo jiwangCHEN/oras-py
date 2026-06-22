@@ -12,8 +12,7 @@ __license__ = "Apache-2.0"
 import threading
 from typing import Tuple
 
-from oras.copy.descriptor import descriptor_key
-from oras.types import Descriptor
+from oras.types import Descriptor, descriptor_key
 
 
 class StatusTracker:

@@ -19,11 +19,10 @@ from typing import Optional
 from oras.content import storage
 from oras.content.memory import MemoryStorage
 from oras.content.storage import CacheProxy, FetcherFunc
-from oras.copy.descriptor import descriptors_equal
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.graph import SkipNode, copy_graph, successors
 from oras.copy.options import DEFAULT_MAX_METADATA_BYTES, CopyOptions
-from oras.types import Descriptor
+from oras.types import Descriptor, descriptors_equal
 
 
 def copy(

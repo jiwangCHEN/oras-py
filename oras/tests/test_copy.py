@@ -27,16 +27,16 @@ from oras.copy import (
     SkipNode,
     copy,
 )
-from oras.copy.descriptor import (
+from oras.copy.graph import LimitedRegion, copy_graph, successors
+from oras.copy.tracker import StatusTracker
+from oras.tests.conftest import InMemoryTarget  # shared test fixture
+from oras.types import (
     descriptor_key,
     descriptors_equal,
     is_foreign_layer,
     is_manifest,
     remove_foreign_layers,
 )
-from oras.copy.graph import LimitedRegion, copy_graph, successors
-from oras.copy.tracker import StatusTracker
-from oras.tests.conftest import InMemoryTarget  # shared test fixture
 
 
 def _make_blob(data: bytes, media_type: str = "application/octet-stream") -> Descriptor:

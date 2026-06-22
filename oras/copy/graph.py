@@ -21,10 +21,6 @@ from typing import Callable, List, Optional
 from oras.content import storage
 from oras.content.memory import MemoryStorage
 from oras.content.storage import CacheProxy
-from oras.copy.descriptor import (
-    is_manifest,
-    remove_foreign_layers,
-)
 from oras.copy.errors import CopyError, CopyErrorOrigin
 from oras.copy.options import (
     DEFAULT_CONCURRENCY,
@@ -32,7 +28,7 @@ from oras.copy.options import (
     CopyGraphOptions,
 )
 from oras.copy.tracker import StatusTracker
-from oras.types import Descriptor
+from oras.types import Descriptor, is_manifest, remove_foreign_layers
 
 
 # Sentinel exception class: raise SkipNode() from pre_copy to signal
