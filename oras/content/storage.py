@@ -175,8 +175,14 @@ class CacheProxy:
                 return stream
             self._cached_bytes += size
 
-        # Read, cache, and return
-        data = stream.read()
+        # Read fully into memory, cache, and return a fresh stream. The base
+        # stream is consumed here, so close it to avoid leaking file descriptors
+        # for file-backed targets (e.g. LayoutTarget.fetch()). The early-return
+        # paths above hand the stream to the caller, who is responsible for it.
+        try:
+            data = stream.read()
+        finally:
+            stream.close()
         self.cache.push(desc, io.BytesIO(data))
         return io.BytesIO(data)
 

@@ -117,7 +117,7 @@ class Registry:
         :param container: container URI (e.g., "ghcr.io/user/repo:latest")
         :type container: str
         :return: a Target adapter scoped to the given repository
-        :rtype: oras.provider.RegistryTarget
+        :rtype: oras.content.registry.RegistryTarget
         """
         return RegistryTarget(self, container)
 

@@ -141,13 +141,17 @@ class RegistryTarget:
                         self._opts.graph.chunk_size
                         or oras.defaults.default_chunksize
                     )
-                self._registry.upload_blob(
+                response = self._registry.upload_blob(
                     tmp.name,
                     self._container,
                     desc,
                     do_chunked=do_chunked,
                     chunk_size=chunk_size,
                 )
+                # upload_blob returns the response rather than raising, so a
+                # non-2xx here must be surfaced or the copy would appear to
+                # succeed while the blob was never uploaded.
+                self._registry._check_200_response(response)
             finally:
                 if tmp is not None:
                     try:
@@ -202,9 +206,14 @@ class RegistryTarget:
         if response.status_code == 201:
             return  # Mount succeeded
 
-        # Mount failed (202) — fall back to regular upload
+        # Mount failed (202) — fall back to regular upload. Close the stream
+        # after reading: for file-backed sources (e.g. LayoutTarget) it is an
+        # open file handle, and repeated mounts would otherwise leak descriptors.
         content = get_content()
-        data = content.read()
+        try:
+            data = content.read()
+        finally:
+            content.close()
         session_url = self._registry._get_location(response, self._container)
         if not session_url:
             raise ValueError("Mount fallback: no session URL in response")

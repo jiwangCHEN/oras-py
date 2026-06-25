@@ -32,7 +32,7 @@ class CopyGraphOptions:
             If <= 0, defaults to DEFAULT_CONCURRENCY (3).
         max_metadata_bytes: Max bytes of metadata cached in memory.
             If <= 0, defaults to DEFAULT_MAX_METADATA_BYTES (4 MiB).
-        pre_copy: Called before copying a descriptor. Return SkipNode
+        pre_copy: Called before copying a descriptor. Raise SkipNode
             to signal the node was handled externally (e.g., mounted).
         post_copy: Called after a descriptor is successfully copied.
         on_copy_skipped: Called when a node's sub-DAG already exists

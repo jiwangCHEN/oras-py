@@ -6,7 +6,7 @@ __license__ = "Apache-2.0"
 
 import json
 import pathlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import jsonschema
 import requests
@@ -174,7 +174,7 @@ class Layout:
         self._process_manifest(manifest_entry["digest"], collected)
         return collected
 
-    def find_index_entry(self, reference: str) -> dict | None:
+    def find_index_entry(self, reference: str) -> Optional[dict]:
         """
         Find the index.json manifest entry tagged with the given reference.
 
@@ -184,7 +184,7 @@ class Layout:
         :param reference: the reference (tag) to look up in index.json annotations
         :type reference: str
         :return: the matching manifest entry, or None if no entry matches
-        :rtype: dict | None
+        :rtype: Optional[dict]
         """
         index_file = (
             pathlib.Path(self._oci_layout_path) / oras.defaults.oci_image_index_file
