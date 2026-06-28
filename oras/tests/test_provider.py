@@ -267,7 +267,7 @@ def test_copy_calls_copy_engine():
         captured["dst_target"] = dst_target
         return {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:abc", "size": 42}
 
-    with patch("oras.copy.copy", side_effect=fake_copy):
+    with patch("oras.provider.copy_fn", side_effect=fake_copy):
         result = remote.copy(
             "registry.example.com/user/repo:v1.0",
             "registry.example.com/user/other:v2.0",
@@ -289,7 +289,7 @@ def test_copy_uses_digest_ref_when_present():
         captured["dst_ref"] = dst_ref
         return {"digest": "sha256:deadbeef", "size": 0, "mediaType": ""}
 
-    with patch("oras.copy.copy", side_effect=fake_copy):
+    with patch("oras.provider.copy_fn", side_effect=fake_copy):
         remote.copy(
             "registry.example.com/user/repo@sha256:deadbeef",
             "registry.example.com/user/other:stable",
@@ -310,7 +310,7 @@ def test_copy_passes_opts_to_engine():
         captured["opts"] = received_opts
         return {"digest": "sha256:x", "size": 0, "mediaType": ""}
 
-    with patch("oras.copy.copy", side_effect=fake_copy):
+    with patch("oras.provider.copy_fn", side_effect=fake_copy):
         remote.copy(
             "registry.example.com/user/repo:v1",
             "registry.example.com/user/other:v1",
@@ -417,7 +417,7 @@ def test_push_returns_manifest_put_response(tmp_path):
             "size": 1,
         }
 
-    with patch("oras.copy.copy", side_effect=fake_copy):
+    with patch("oras.provider.copy_fn", side_effect=fake_copy):
         response = remote.push(
             files=[str(artifact)],
             target="registry.example.com/user/repo:v1",
