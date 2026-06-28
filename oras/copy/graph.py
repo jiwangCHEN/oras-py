@@ -157,8 +157,12 @@ def successors(fetcher, desc: Descriptor) -> List[Descriptor]:
 
 def _manifest_successors(fetcher, desc: Descriptor) -> List[Descriptor]:
     """Extract successors from a manifest (config + layers + subject)."""
-    data = fetcher.fetch(desc)
-    manifest = json.loads(data.read())
+    stream = fetcher.fetch(desc)
+    try:
+        manifest = json.loads(stream.read())
+    finally:
+        if hasattr(stream, "close"):
+            stream.close()
     result: List[Descriptor] = []
     if "config" in manifest and manifest["config"]:
         result.append(manifest["config"])
@@ -170,8 +174,12 @@ def _manifest_successors(fetcher, desc: Descriptor) -> List[Descriptor]:
 
 def _index_successors(fetcher, desc: Descriptor) -> List[Descriptor]:
     """Extract successors from an index (manifests + subject)."""
-    data = fetcher.fetch(desc)
-    index = json.loads(data.read())
+    stream = fetcher.fetch(desc)
+    try:
+        index = json.loads(stream.read())
+    finally:
+        if hasattr(stream, "close"):
+            stream.close()
     result: List[Descriptor] = list(index.get("manifests", []))
     if "subject" in index and index["subject"]:
         result.append(index["subject"])

@@ -574,7 +574,7 @@ class Layout:
         :func:`oras.copy.copy` as either source or destination.
 
         :return: a Target adapter wrapping this layout
-        :rtype: oras.layout.layout.LayoutTarget
+        :rtype: oras.content.layout.LayoutTarget
         """
         return LayoutTarget(self)
 
