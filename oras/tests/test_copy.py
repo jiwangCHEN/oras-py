@@ -10,12 +10,14 @@ import hashlib
 import io
 import json
 import threading
-from typing import BinaryIO, Dict, List, Optional, Tuple
+from typing import BinaryIO, List, Tuple
 from unittest.mock import MagicMock
 
 import pytest
 
+import oras.defaults
 from oras.content.layout import LayoutTarget, _VALID_DIGEST_RE
+from oras.layout import Layout
 from oras.content.memory import MemoryStorage
 from oras.content.storage import CacheProxy, FetcherFunc
 from oras.copy import (
@@ -82,13 +84,6 @@ def _make_index(manifests: List[Descriptor]) -> Tuple[Descriptor, bytes]:
         "size": len(data),
     }
     return desc, data
-
-
-def _populate_source(target: InMemoryTarget, desc: Descriptor, data: bytes, ref: str = None):
-    """Push content and optionally tag it in the target."""
-    target.push(desc, io.BytesIO(data))
-    if ref:
-        target.tag(desc, ref)
 
 
 # ---------------------------------------------------------------------------
@@ -1048,9 +1043,8 @@ class TestCopyOptionsMapRoot:
         src = InMemoryTarget()
         dst = InMemoryTarget()
 
-        # Setup three blobs: original, intermediate, final
         blobs = {}
-        for name in ("original", "intermediate", "final"):
+        for name in ("original", "final"):
             data = name.encode()
             desc = _make_blob(data)
             src.push(desc, io.BytesIO(data))
@@ -1058,7 +1052,6 @@ class TestCopyOptionsMapRoot:
 
         src.tag(blobs["original"], "start")
 
-        # First map_root transforms to intermediate
         opts = CopyOptions(
             map_root=lambda store, root: blobs["final"],
         )
@@ -2210,3 +2203,344 @@ class TestLayoutTargetDigestValidation:
         assert not _VALID_DIGEST_RE.match("sha256:../../etc/passwd")
         assert not _VALID_DIGEST_RE.match("sha256:ABCDEF")  # uppercase
         assert not _VALID_DIGEST_RE.match("")
+
+
+# ---------------------------------------------------------------------------
+# Tests: LayoutTarget real on-disk behavior (Target protocol round-trips)
+# ---------------------------------------------------------------------------
+
+
+class TestLayoutTargetFilesystem:
+    """
+    Exercise LayoutTarget against a real OCI layout directory.
+
+    The other LayoutTarget tests use a MagicMock layout; these drive the
+    actual filesystem code paths: atomic content-addressed push, fetch,
+    existence checks, index.json tagging/resolution, and skeleton init.
+    """
+
+    @staticmethod
+    def _new_target(tmp_path, name="layout"):
+        layout = Layout(str(tmp_path / name), validate=False)
+        return LayoutTarget(layout)
+
+    def test_push_creates_layout_skeleton(self, tmp_path):
+        """First push should materialize the OCI layout skeleton on disk."""
+        layout_dir = tmp_path / "layout"
+        target = LayoutTarget(Layout(str(layout_dir), validate=False))
+
+        data = b"hello layout"
+        desc = _make_blob(data)
+        target.push(desc, io.BytesIO(data))
+
+        assert (layout_dir / oras.defaults.oci_layout_file).exists()
+        assert (layout_dir / oras.defaults.oci_image_index_file).exists()
+        assert (layout_dir / oras.defaults.oci_blobs_dir).is_dir()
+        # The resulting directory is a valid OCI layout.
+        assert Layout.is_oci_layout(str(layout_dir)) is True
+
+    def test_push_fetch_exists_round_trip(self, tmp_path):
+        """Content pushed to the layout can be checked and read back exactly."""
+        target = self._new_target(tmp_path)
+
+        data = b"round trip content"
+        desc = _make_blob(data)
+
+        assert not target.exists(desc)
+        target.push(desc, io.BytesIO(data))
+        assert target.exists(desc)
+
+        with target.fetch(desc) as fh:
+            assert fh.read() == data
+
+        # Blob is stored content-addressed at blobs/<algo>/<hash>.
+        algo, hexd = desc["digest"].split(":", 1)
+        blob_path = tmp_path / "layout" / "blobs" / algo / hexd
+        assert blob_path.read_bytes() == data
+
+    def test_push_is_idempotent_and_deduplicates(self, tmp_path):
+        """Pushing the same digest twice is silent and leaves content intact."""
+        target = self._new_target(tmp_path)
+
+        data = b"dedupe me"
+        desc = _make_blob(data)
+        target.push(desc, io.BytesIO(data))
+
+        algo, hexd = desc["digest"].split(":", 1)
+        blob_path = tmp_path / "layout" / "blobs" / algo / hexd
+        first_mtime = blob_path.stat().st_mtime_ns
+
+        # Second push should short-circuit without rewriting the blob file.
+        target.push(desc, io.BytesIO(data))
+        assert blob_path.stat().st_mtime_ns == first_mtime
+        with target.fetch(desc) as fh:
+            assert fh.read() == data
+
+    def test_push_streams_large_content(self, tmp_path):
+        """Large blobs round-trip correctly through the streaming push path."""
+        target = self._new_target(tmp_path)
+
+        data = b"x" * (1024 * 1024 + 7)  # ~1 MiB, not a round buffer size
+        desc = _make_blob(data)
+        target.push(desc, io.BytesIO(data))
+
+        with target.fetch(desc) as fh:
+            assert fh.read() == data
+
+    def test_push_leaves_no_temp_files(self, tmp_path):
+        """Atomic push must not leave temp files behind in the blob dir."""
+        target = self._new_target(tmp_path)
+
+        data = b"atomic"
+        desc = _make_blob(data)
+        target.push(desc, io.BytesIO(data))
+
+        algo, _ = desc["digest"].split(":", 1)
+        algo_dir = tmp_path / "layout" / "blobs" / algo
+        entries = list(algo_dir.iterdir())
+        assert len(entries) == 1  # only the final blob, no tmp* leftovers
+
+    def test_push_failure_cleans_up_temp_file(self, tmp_path):
+        """A streaming error mid-push must propagate and leave no temp file."""
+        target = self._new_target(tmp_path)
+        target.push(_make_blob(b"seed"), io.BytesIO(b"seed"))  # init skeleton
+
+        class ExplodingReader(io.RawIOBase):
+            def readable(self):
+                return True
+
+            def readinto(self, b):
+                raise IOError("stream died mid-copy")
+
+        desc = _make_blob(b"never lands")
+        with pytest.raises(IOError, match="stream died mid-copy"):
+            target.push(desc, ExplodingReader())
+
+        # Blob was not committed, and no tmp* scratch file was left behind.
+        assert not target.exists(desc)
+        algo, _ = desc["digest"].split(":", 1)
+        algo_dir = tmp_path / "layout" / "blobs" / algo
+        leftover = [p for p in algo_dir.iterdir() if p.name.startswith("tmp")]
+        assert leftover == []
+
+    def test_fetch_missing_blob_raises(self, tmp_path):
+        """Fetching a valid-but-absent digest raises FileNotFoundError."""
+        target = self._new_target(tmp_path)
+        target.push(_make_blob(b"seed"), io.BytesIO(b"seed"))  # ensure skeleton
+
+        missing = _make_blob(b"never pushed")
+        with pytest.raises(FileNotFoundError):
+            target.fetch(missing)
+
+    def test_tag_then_resolve_round_trip(self, tmp_path):
+        """A tagged descriptor resolves back to equal metadata."""
+        target = self._new_target(tmp_path)
+
+        desc, data = _make_manifest(
+            _make_blob(b'{"c":1}', "application/vnd.oci.image.config.v1+json"), []
+        )
+        target.push(desc, io.BytesIO(data))
+        target.tag(desc, "v1.0")
+
+        resolved = target.resolve("v1.0")
+        assert resolved["digest"] == desc["digest"]
+        assert resolved["mediaType"] == desc["mediaType"]
+        assert resolved["size"] == desc["size"]
+
+    def test_tag_replaces_existing_reference(self, tmp_path):
+        """Re-tagging the same reference replaces, not duplicates, the entry."""
+        target = self._new_target(tmp_path)
+
+        desc1 = _make_blob(b"first", "application/vnd.oci.image.manifest.v1+json")
+        desc2 = _make_blob(b"second", "application/vnd.oci.image.manifest.v1+json")
+        target.push(desc1, io.BytesIO(b"first"))
+        target.push(desc2, io.BytesIO(b"second"))
+
+        target.tag(desc1, "stable")
+        target.tag(desc2, "stable")  # same ref, new target
+
+        index = read_json_index(tmp_path / "layout")
+        stable_entries = [
+            m
+            for m in index["manifests"]
+            if m.get("annotations", {}).get(
+                oras.defaults.oci_ref_name_annotation
+            )
+            == "stable"
+        ]
+        assert len(stable_entries) == 1
+        assert target.resolve("stable")["digest"] == desc2["digest"]
+
+    def test_tag_appends_distinct_references(self, tmp_path):
+        """Distinct references each get their own index entry."""
+        target = self._new_target(tmp_path)
+
+        desc_a = _make_blob(b"a", "application/vnd.oci.image.manifest.v1+json")
+        desc_b = _make_blob(b"b", "application/vnd.oci.image.manifest.v1+json")
+        target.push(desc_a, io.BytesIO(b"a"))
+        target.push(desc_b, io.BytesIO(b"b"))
+        target.tag(desc_a, "alpha")
+        target.tag(desc_b, "beta")
+
+        assert target.resolve("alpha")["digest"] == desc_a["digest"]
+        assert target.resolve("beta")["digest"] == desc_b["digest"]
+        index = read_json_index(tmp_path / "layout")
+        assert len(index["manifests"]) == 2
+
+    def test_resolve_missing_reference_raises(self, tmp_path):
+        """Resolving an unknown reference raises FileNotFoundError."""
+        target = self._new_target(tmp_path)
+        target.push(_make_blob(b"seed"), io.BytesIO(b"seed"))  # creates index.json
+
+        with pytest.raises(FileNotFoundError, match="Reference not found"):
+            target.resolve("does-not-exist")
+
+    def test_invalid_digest_rejected_on_all_ops(self, tmp_path):
+        """Path-traversal digests are rejected by fetch/exists/push alike."""
+        target = self._new_target(tmp_path)
+        evil = {"digest": "sha256:../../etc/passwd", "mediaType": "", "size": 0}
+
+        with pytest.raises(ValueError, match="invalid digest format"):
+            target.fetch(evil)
+        with pytest.raises(ValueError, match="invalid digest format"):
+            target.exists(evil)
+        with pytest.raises(ValueError, match="invalid digest format"):
+            target.push(evil, io.BytesIO(b"x"))
+
+    def test_tag_thread_safety(self, tmp_path):
+        """Concurrent tagging of distinct refs keeps the index consistent."""
+        target = self._new_target(tmp_path)
+        target.push(_make_blob(b"seed"), io.BytesIO(b"seed"))  # init skeleton
+
+        descs = {}
+        for i in range(25):
+            data = f"blob-{i}".encode()
+            d = _make_blob(data, "application/vnd.oci.image.manifest.v1+json")
+            target.push(d, io.BytesIO(data))
+            descs[f"ref-{i}"] = d
+
+        errors = []
+
+        def tag_one(ref, desc):
+            try:
+                target.tag(desc, ref)
+            except Exception as e:  # pragma: no cover - failure path
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=tag_one, args=(ref, d))
+            for ref, d in descs.items()
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        for ref, d in descs.items():
+            assert target.resolve(ref)["digest"] == d["digest"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: end-to-end copy() between two on-disk OCI layouts
+# ---------------------------------------------------------------------------
+
+
+def read_json_index(layout_dir):
+    """Read a layout's index.json as a dict."""
+    import oras.utils as utils
+
+    return utils.read_json(str(layout_dir / oras.defaults.oci_image_index_file))
+
+
+class TestCopyBetweenLayouts:
+    """copy() should work with LayoutTarget on both ends (real filesystem)."""
+
+    def test_copy_manifest_layout_to_layout(self, tmp_path):
+        """Copy a manifest (config + layer) from one layout dir to another."""
+        src = LayoutTarget(Layout(str(tmp_path / "src"), validate=False))
+        dst = LayoutTarget(Layout(str(tmp_path / "dst"), validate=False))
+
+        config_data = b'{"architecture":"amd64"}'
+        config_desc = _make_blob(
+            config_data, "application/vnd.oci.image.config.v1+json"
+        )
+        src.push(config_desc, io.BytesIO(config_data))
+
+        layer_data = b"layer payload"
+        layer_desc = _make_blob(
+            layer_data, "application/vnd.oci.image.layer.v1.tar+gzip"
+        )
+        src.push(layer_desc, io.BytesIO(layer_data))
+
+        manifest_desc, manifest_data = _make_manifest(config_desc, [layer_desc])
+        src.push(manifest_desc, io.BytesIO(manifest_data))
+        src.tag(manifest_desc, "v1")
+
+        root = copy(src, "v1", dst, "v1")
+
+        assert descriptors_equal(root, manifest_desc)
+        # All blobs landed on disk at the destination.
+        assert dst.exists(config_desc)
+        assert dst.exists(layer_desc)
+        assert dst.exists(manifest_desc)
+        with dst.fetch(layer_desc) as fh:
+            assert fh.read() == layer_data
+        # Tag resolves at the destination and the result is a valid layout.
+        assert dst.resolve("v1")["digest"] == manifest_desc["digest"]
+        assert Layout.is_oci_layout(str(tmp_path / "dst")) is True
+
+    def test_copy_index_layout_to_layout(self, tmp_path):
+        """Copy a multi-manifest index between layouts, sharing a config blob."""
+        src = LayoutTarget(Layout(str(tmp_path / "src"), validate=False))
+        dst = LayoutTarget(Layout(str(tmp_path / "dst"), validate=False))
+
+        config_data = b'{"shared":true}'
+        config_desc = _make_blob(
+            config_data, "application/vnd.oci.image.config.v1+json"
+        )
+        src.push(config_desc, io.BytesIO(config_data))
+
+        manifest_descs = []
+        for i in range(3):
+            layer_data = f"layer-{i}".encode()
+            layer_desc = _make_blob(
+                layer_data, "application/vnd.oci.image.layer.v1.tar+gzip"
+            )
+            src.push(layer_desc, io.BytesIO(layer_data))
+            m_desc, m_data = _make_manifest(config_desc, [layer_desc])
+            src.push(m_desc, io.BytesIO(m_data))
+            manifest_descs.append(m_desc)
+
+        index_desc, index_data = _make_index(manifest_descs)
+        src.push(index_desc, io.BytesIO(index_data))
+        src.tag(index_desc, "multi")
+
+        root = copy(src, "multi", dst, "multi")
+
+        assert descriptors_equal(root, index_desc)
+        assert dst.exists(index_desc)
+        assert dst.exists(config_desc)
+        for m in manifest_descs:
+            assert dst.exists(m)
+        assert dst.resolve("multi")["digest"] == index_desc["digest"]
+
+    def test_copy_layout_to_layout_idempotent(self, tmp_path):
+        """Copying twice into the same destination must not error (dedup)."""
+        src = LayoutTarget(Layout(str(tmp_path / "src"), validate=False))
+        dst = LayoutTarget(Layout(str(tmp_path / "dst"), validate=False))
+
+        config_desc = _make_blob(
+            b'{"c":1}', "application/vnd.oci.image.config.v1+json"
+        )
+        src.push(config_desc, io.BytesIO(b'{"c":1}'))
+        manifest_desc, manifest_data = _make_manifest(config_desc, [])
+        src.push(manifest_desc, io.BytesIO(manifest_data))
+        src.tag(manifest_desc, "v1")
+
+        copy(src, "v1", dst, "v1")
+        # Second copy: everything already present at dst -> full skip + re-tag.
+        root = copy(src, "v1", dst, "v1")
+
+        assert descriptors_equal(root, manifest_desc)
+        assert dst.resolve("v1")["digest"] == manifest_desc["digest"]

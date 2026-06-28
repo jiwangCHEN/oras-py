@@ -150,9 +150,6 @@ def _resolve_root(
         except Exception as e:
             raise CopyError("Successors", CopyErrorOrigin.SOURCE, e)
 
-        # Also push to cache so the proxy has it
-        proxy.cache.push(root, io.BytesIO(data))
-
         return root
 
     # Standard path: resolve only

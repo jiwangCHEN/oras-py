@@ -455,12 +455,7 @@ def _mount_or_copy_node(
                 raise _SkipSource()
             # Last source: actually fetch and copy
             if opts.pre_copy is not None:
-                try:
-                    opts.pre_copy(desc)
-                except Exception as e:
-                    if isinstance(e, SkipNode):
-                        return io.BytesIO(b"")
-                    raise
+                opts.pre_copy(desc)
             return src.fetch(desc)
 
         try:
