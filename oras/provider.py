@@ -632,11 +632,10 @@ class Registry:
                 # Important to update with auth token if acquired
                 # TODO call to auth here
                 start = end + 1
-                self._check_200_response(
-                    r := self.do_request(
-                        session_url, "PATCH", data=chunk, headers=headers
-                    )
+                r = self.do_request(
+                    session_url, "PATCH", data=chunk, headers=headers
                 )
+                self._check_200_response(r)
                 session_url = self._get_location(r, container)
                 if not session_url:
                     raise ValueError(f"Issue retrieving session url: {r.json()}")
@@ -732,8 +731,8 @@ class Registry:
         self.auth.load_configs(src_container, configs=configs)
         self.auth.load_configs(dst_container, configs=configs)
 
-        src_target = RegistryTarget(self, src_container)
-        dst_target = RegistryTarget(self, dst_container)
+        src_target = RegistryTarget(self, src_container, opts)
+        dst_target = RegistryTarget(self, dst_container, opts)
 
         src_ref = src_container.digest or src_container.tag
         dst_ref = dst_container.digest or dst_container.tag

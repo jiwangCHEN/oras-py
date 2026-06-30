@@ -119,6 +119,8 @@ def _resolve_root(
     The fetched content is fed through ``successors`` to ensure
     it gets cached in the proxy for later use during graph traversal.
 
+    Currently referenceFetcher is not implemented for registry targets.
+
     Matches oras-go's resolveRoot.
     """
     if isinstance(src, storage.ReferenceFetcher):
@@ -137,8 +139,6 @@ def _resolve_root(
             if hasattr(rc, "close"):
                 rc.close()
 
-        # Cache the root content by feeding it through successors
-        # This ensures the proxy has the manifest/index cached
         def fetch_root(desc):
             if descriptors_equal(desc, root):
                 return io.BytesIO(data)

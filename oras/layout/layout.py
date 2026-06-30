@@ -6,7 +6,7 @@ __license__ = "Apache-2.0"
 
 import json
 import pathlib
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import jsonschema
 import requests
@@ -147,7 +147,7 @@ class Layout:
         except (FileNotFoundError, ValueError, OSError):
             return False
 
-    def get_ordered_blobs(self, tag: str = "latest") -> list[str]:
+    def get_ordered_blobs(self, tag: str = "latest") -> List[str]:
         """
         Traverse an OCI layout and collect blob digests in dependency order for pushing.
 
@@ -170,7 +170,7 @@ class Layout:
             raise ValueError(f"Tag '{tag}' not found in index")
 
         # Collect blobs in dependency order
-        collected: list[str] = []
+        collected: List[str] = []
         self._process_manifest(manifest_entry["digest"], collected)
         return collected
 
@@ -196,7 +196,7 @@ class Layout:
                 return manifest_entry
         return None
 
-    def _process_manifest(self, digest: str, collected: list[str]) -> None:
+    def _process_manifest(self, digest: str, collected: List[str]) -> None:
         """
         Recursively process a manifest blob and collect dependencies.
 

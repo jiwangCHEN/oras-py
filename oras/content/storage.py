@@ -27,7 +27,12 @@ __license__ = "Apache-2.0"
 
 import io
 import threading
-from typing import BinaryIO, Callable, Protocol, Tuple, runtime_checkable
+from typing import BinaryIO, Callable, Tuple
+
+try:
+    from typing import Protocol, runtime_checkable  # Python 3.8+
+except ImportError:  # Python 3.7
+    from typing_extensions import Protocol, runtime_checkable
 
 from oras.types import Descriptor
 

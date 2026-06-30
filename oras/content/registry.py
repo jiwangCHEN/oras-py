@@ -155,6 +155,10 @@ class RegistryTarget:
             finally:
                 if tmp is not None:
                     try:
+                        tmp.close()
+                    except Exception:
+                        pass
+                    try:
                         os.unlink(tmp.name)
                     except OSError:
                         pass
