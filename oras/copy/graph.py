@@ -453,7 +453,10 @@ def _mount_or_copy_node(
             if i < len(source_repositories) - 1:
                 # Not the last source; signal to try next
                 raise _SkipSource()
-            # Last source: actually fetch and copy
+            # Last source: actually fetch and copy. If pre_copy raises
+            # SkipNode, let it propagate out of dst.mount() so the caller
+            # skips the node entirely instead of uploading empty content
+            # under the descriptor's (non-empty) digest.
             if opts.pre_copy is not None:
                 opts.pre_copy(desc)
             return src.fetch(desc)
@@ -462,6 +465,11 @@ def _mount_or_copy_node(
             dst.mount(desc, source_repository, get_content)
         except _SkipSource:
             continue
+        except SkipNode:
+            # pre_copy signalled skip during the upload fallback: abort
+            # this node without uploading and without firing post_copy,
+            # matching _copy_node's skip semantics.
+            return
         except Exception as e:
             raise CopyError("Mount", CopyErrorOrigin.DESTINATION, e)
 

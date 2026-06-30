@@ -1486,8 +1486,9 @@ class TestCopyGraphErrorPaths:
                 pre_copy=skip_pre_copy,
             ),
         )
-        # Should not raise; SkipNode in get_content returns empty BytesIO
+        # SkipNode from pre_copy skips the node: no upload, no error.
         copy(src, "v1", dst, "v1", opts)
+        assert not dst.exists(desc)
 
     def test_mount_fallback_post_copy_called(self):
         """After mount fallback to copy, post_copy should be called."""
