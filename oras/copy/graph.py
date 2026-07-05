@@ -347,9 +347,20 @@ def _copy_node(
 
 
 def _verify_digest(data: bytes, expected_digest: str) -> None:
-    """Verify fetched content matches the expected digest."""
-    if not expected_digest or ":" not in expected_digest:
+    """Verify fetched content matches the expected digest.
+
+    An empty digest means there is nothing to verify against and is skipped.
+    A malformed digest or an unsupported algorithm is treated as an error so
+    callers never mistake unverified content for verified content.
+    """
+    if not expected_digest:
         return
+    if ":" not in expected_digest:
+        raise CopyError(
+            "VerifyDigest",
+            CopyErrorOrigin.SOURCE,
+            ValueError(f"invalid digest format: {expected_digest!r}"),
+        )
     algorithm, expected_hash = expected_digest.split(":", 1)
     try:
         h = hashlib.new(algorithm)

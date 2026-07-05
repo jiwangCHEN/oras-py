@@ -31,7 +31,7 @@ from oras.copy import (
 )
 from oras.copy.graph import LimitedRegion, copy_graph, successors
 from oras.copy.tracker import StatusTracker
-from oras.tests.conftest import InMemoryTarget  # shared test fixture
+from oras.tests.helpers import InMemoryTarget  # shared test helper
 from oras.types import (
     descriptor_key,
     descriptors_equal,
@@ -2113,6 +2113,42 @@ class TestDigestVerification:
         copy_graph(src, dst, blob_desc)
         assert dst.exists(blob_desc)
         assert dst.get_content(blob_desc["digest"]) == blob_data
+
+    def test_invalid_digest_format_raises_error(self):
+        """A non-empty but malformed digest must be rejected, not skipped."""
+        src = InMemoryTarget()
+        dst = InMemoryTarget()
+
+        blob_data = b"deadbeef"
+        bad_desc = {
+            "mediaType": "application/octet-stream",
+            "digest": "deadbeef",  # missing "algorithm:" prefix
+            "size": len(blob_data),
+        }
+        with src._lock:
+            src._content[bad_desc["digest"]] = blob_data
+
+        with pytest.raises(CopyError, match="invalid digest format"):
+            copy_graph(src, dst, bad_desc)
+        assert not dst.exists(bad_desc)
+
+    def test_unsupported_digest_algorithm_raises_error(self):
+        """A digest with an unsupported algorithm must be rejected, not skipped."""
+        src = InMemoryTarget()
+        dst = InMemoryTarget()
+
+        blob_data = b"payload"
+        bad_desc = {
+            "mediaType": "application/octet-stream",
+            "digest": "fakealgo:abcdef",
+            "size": len(blob_data),
+        }
+        with src._lock:
+            src._content[bad_desc["digest"]] = blob_data
+
+        with pytest.raises(CopyError, match="unsupported digest algorithm"):
+            copy_graph(src, dst, bad_desc)
+        assert not dst.exists(bad_desc)
 
 
 # ---------------------------------------------------------------------------
